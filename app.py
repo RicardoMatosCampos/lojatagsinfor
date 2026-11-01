@@ -669,6 +669,10 @@ def converter_imagem_upload(arquivo_upload) -> str:
     raw_bytes = buffer.getvalue()
 
     try:
+        try:
+            supabase.storage.create_bucket("produtos-midia", options={"public": True})
+        except Exception:
+            pass
         nome_arq = f"prod_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.{ext}"
         supabase.storage.from_("produtos-midia").upload(
             path=nome_arq,
@@ -2452,15 +2456,21 @@ if modo_admin_ativo:
 
                     if c_act.button("Salvar Rápido", key=f"lp_save_{p['id']}", type="primary", width="stretch"):
                         supabase.table("produtos").update({"preco_venda": float(np), "estoque": int(ne), "ativo": nv}).eq("id", p["id"]).execute()
-                        st.success("Atualizado!")
+                        st.toast("✅ Preço e estoque atualizados!")
                         st.rerun()
+
+                    if c_act.button("📸 Fotos & Vídeo", key=f"lp_midia_{p['id']}", width="stretch"):
+                        st.session_state[f"abrir_ed_midia_{p['id']}"] = not st.session_state.get(f"abrir_ed_midia_{p['id']}", False)
 
                     if c_act.button("Excluir", key=f"lp_del_{p['id']}", width="stretch"):
                         supabase.table("produtos").delete().eq("id", p["id"]).execute()
                         st.rerun()
 
                     # EXPANDER COMPLETO PARA EDITAR FOTOS, GALERIA, VÍDEO, FICHA TÉCNICA E AVALIAÇÕES
-                    with st.expander(f"🖼️ Editar Fotos, Galeria ({len(gal_p_all)}), Vídeo, Ficha Técnica e Avaliações — #{p['id']}"):
+                    with st.expander(
+                        f"🖼️ Clique aqui para Editar Fotos, Galeria ({len(gal_p_all)}), Vídeo, Ficha Técnica e Avaliações — #{p['id']}",
+                        expanded=st.session_state.get(f"abrir_ed_midia_{p['id']}", False),
+                    ):
                         tab_ed_midia, tab_ed_ficha, tab_ed_aval = st.tabs([
                             "📸 Fotos & Vídeo (YouTube / Outros)",
                             "⚙️ Descrição, Categoria & Ficha Técnica",
