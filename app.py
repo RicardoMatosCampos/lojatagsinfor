@@ -5271,49 +5271,55 @@ else:
         col_det_midia, col_det_compra = st.columns([1.25, 1.35])
 
         with col_det_midia:
-            # Seletor de Mídia (Fotos da Galeria + Vídeo)
-            opcoes_midia_idx = list(range(len(gal_exp)))
+            pid_g = prod_expandido["id"]
+            regras_css_gal = [
+                ".gal-rad-in { display:none !important; }",
+                ".gal-slides-wrap { width:100%; margin-bottom:10px; }",
+                ".gal-slide-box { display:none; width:100%; height:300px; border-radius:14px; overflow:hidden; background:#0F172A; border:1px solid #334155; align-items:center; justify-content:center; }",
+                ".gal-slide-box img { max-width:100%; max-height:100%; object-fit:contain; }",
+                ".gal-pills-wrap { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }",
+                ".gal-pill-btn { cursor:pointer; padding:6px 12px; border-radius:20px; font-size:0.78rem; font-weight:700; background:#1E293B; color:#CBD5E1; border:1px solid #334155; user-select:none; transition:all 0.15s ease; }",
+                ".gal-thumbs-wrap { display:flex; gap:8px; overflow-x:auto; padding:4px 2px 8px 2px; margin-bottom:6px; }",
+                ".gal-thumb-btn { cursor:pointer; width:64px; height:64px; flex-shrink:0; border-radius:10px; overflow:hidden; border:2px solid #334155; background:#0F172A; opacity:0.65; transition:all 0.15s ease; display:block; }",
+                ".gal-thumb-btn img { width:100%; height:100%; object-fit:cover; display:block; pointer-events:none; }",
+            ]
+            radios_html = ""
+            pills_html = ""
+            slides_html = ""
+            thumbs_html = ""
+
+            for idx_g, url_g in enumerate(gal_exp):
+                chk_str = "checked" if idx_g == 0 else ""
+                rotulo_p = "📸 Foto Principal" if idx_g == 0 else f"📸 Foto {idx_g + 1}"
+                radios_html += f'<input type="radio" name="gal_grp_{pid_g}" id="gal_rad_{pid_g}_{idx_g}" class="gal-rad-in" {chk_str}>'
+                pills_html += f'<label for="gal_rad_{pid_g}_{idx_g}" class="gal-pill-btn">{rotulo_p}</label>'
+                slides_html += f'<div id="gal_slide_{pid_g}_{idx_g}" class="gal-slide-box"><img src="{url_g}" alt="Foto {idx_g + 1}"></div>'
+                thumbs_html += f'<label for="gal_rad_{pid_g}_{idx_g}" class="gal-thumb-btn" title="Toque para ver {rotulo_p}"><img src="{url_g}" alt="Thumb {idx_g + 1}"></label>'
+                regras_css_gal.append(f'#gal_rad_{pid_g}_{idx_g}:checked ~ .gal-slides-wrap #gal_slide_{pid_g}_{idx_g} {{ display:flex !important; }}')
+                regras_css_gal.append(f'#gal_rad_{pid_g}_{idx_g}:checked ~ .gal-thumbs-wrap label[for="gal_rad_{pid_g}_{idx_g}"] {{ border:2px solid #3B82F6 !important; opacity:1 !important; transform:scale(1.05); box-shadow:0 0 10px rgba(59,130,246,0.45); }}')
+                regras_css_gal.append(f'#gal_rad_{pid_g}_{idx_g}:checked ~ .gal-pills-wrap label[for="gal_rad_{pid_g}_{idx_g}"] {{ background:#2563EB !important; color:#FFFFFF !important; border-color:#3B82F6 !important; }}')
+
+            bloco_pills_top = f'<div class="gal-pills-wrap">{pills_html}</div>' if len(gal_exp) > 1 else ""
+            bloco_thumbs_bot = (
+                f'<div style="font-size:0.74rem; color:#94A3B8; margin-bottom:2px;">👆 Toque nas miniaturas ou botões acima para trocar a foto ({len(gal_exp)} fotos):</div>'
+                f'<div class="gal-thumbs-wrap">{thumbs_html}</div>'
+                if len(gal_exp) > 1
+                else ""
+            )
+            galeria_interativa_html = (
+                f'<style>{"".join(regras_css_gal)}</style>'
+                f'<div class="gal- interactive-container">'
+                f'{radios_html}'
+                f'{bloco_pills_top}'
+                f'<div class="gal-slides-wrap">{slides_html}</div>'
+                f'{bloco_thumbs_bot}'
+                f'</div>'
+            )
+            st.markdown(galeria_interativa_html, unsafe_allow_html=True)
+
             if video_exp:
-                opcoes_midia_idx.append(-1)  # -1 representa a aba de Vídeo
-
-            if len(opcoes_midia_idx) > 1:
-                midia_sel_idx = st.pills(
-                    "Selecionar Mídia",
-                    opcoes_midia_idx,
-                    default=0,
-                    format_func=lambda idx_m: "🎬 Assistir Vídeo" if idx_m == -1 else (f"📸 Foto Principal" if idx_m == 0 else f"📸 Foto {idx_m + 1}"),
-                    label_visibility="collapsed",
-                    key=f"pills_midia_modal_{prod_expandido['id']}",
-                )
-            else:
-                midia_sel_idx = 0
-
-            if midia_sel_idx is None:
-                midia_sel_idx = 0
-
-            if midia_sel_idx == -1 and video_exp:
-                renderizar_player_video_produto(video_exp)
-            else:
-                img_ativa_exp = gal_exp[midia_sel_idx] if 0 <= midia_sel_idx < len(gal_exp) else gal_exp[0]
-                st.markdown(
-                    f'<div style="width:100%; height:290px; border-radius:14px; overflow:hidden; background:#0F172A; border:1px solid #334155; display:flex; align-items:center; justify-content:center; margin-bottom:10px;">'
-                    f'<img src="{img_ativa_exp}" style="max-width:100%; max-height:100%; object-fit:contain;">'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
-
-            # Miniaturas em linha flexível (nunca empilha verticalmente no celular)
-            if len(gal_exp) > 1:
-                thumbs_html = '<div style="display:flex; gap:8px; overflow-x:auto; padding-bottom:6px; margin-bottom:8px;">'
-                for idx_th, u_th in enumerate(gal_exp[:6]):
-                    borda_th = "2px solid #3B82F6" if idx_th == midia_sel_idx else "1px solid #334155"
-                    thumbs_html += (
-                        f'<div style="width:58px; height:58px; flex-shrink:0; border-radius:8px; overflow:hidden; border:{borda_th}; background:#0F172A;">'
-                        f'<img src="{u_th}" style="width:100%; height:100%; object-fit:cover;">'
-                        f'</div>'
-                    )
-                thumbs_html += '</div>'
-                st.markdown(thumbs_html, unsafe_allow_html=True)
+                with st.expander("🎬 Assistir Vídeo Demonstrativo do Produto", expanded=False):
+                    renderizar_player_video_produto(video_exp)
 
         with col_det_compra:
             st.markdown(
