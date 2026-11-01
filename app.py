@@ -505,18 +505,18 @@ st.markdown(
         }
 
         /* 3. Menu de Navegação Principal e Atalhos do Rodapé em Grade 2x2 Compacta no Celular */
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_loja_nav_"]),
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_ft_"]) {
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_loja_nav_"]),
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_ft_"]) {
             display: grid !important;
             grid-template-columns: 1fr 1fr !important;
             gap: 6px !important;
         }
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_loja_nav_"]) > [data-testid="stColumn"]:first-child,
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_ft_"]) > [data-testid="stColumn"]:first-child {
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_loja_nav_"]) > [data-testid="stColumn"]:first-child,
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_ft_"]) > [data-testid="stColumn"]:first-child {
             grid-column: 1 / -1 !important;
         }
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_loja_nav_"]) > [data-testid="stColumn"],
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_ft_"]) > [data-testid="stColumn"] {
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_loja_nav_"]) > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_ft_"]) > [data-testid="stColumn"] {
             width: 100% !important;
             min-width: 0 !important;
             flex: unset !important;
@@ -535,31 +535,39 @@ st.markdown(
             text-overflow: ellipsis !important;
         }
 
-        /* 4. Manter botões de Ação do Card (+ Carrinho | Comprar) lado a lado no Celular */
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_add_car_"]),
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_exp_add_"]) {
+        /* 4. Botões internos (+ Carrinho | Comprar) lado a lado SEM afetar a coluna pai */
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_add_car_"]),
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_exp_add_"]) {
             display: grid !important;
             grid-template-columns: 1fr 1fr !important;
             gap: 6px !important;
         }
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_add_car_"]) > [data-testid="stColumn"],
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_exp_add_"]) > [data-testid="stColumn"] {
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_add_car_"]) > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-btn_exp_add_"]) > [data-testid="stColumn"] {
             width: 100% !important;
             min-width: 0 !important;
             flex: unset !important;
         }
 
-        /* Manter botões (- 1 +) de quantidade no carrinho na mesma linha no Celular */
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-car_dec_"]) {
+        /* Botões (- | + | Remover) do item do carrinho na mesma linha sem afetar colunas externas */
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-car_dec_"]) {
             display: grid !important;
-            grid-template-columns: 1fr 1fr 1fr !important;
-            gap: 4px !important;
+            grid-template-columns: 1fr 1fr 1.2fr !important;
+            gap: 6px !important;
             align-items: center !important;
         }
-        [data-testid="stHorizontalBlock"]:has([class*="st-key-car_dec_"]) > [data-testid="stColumn"] {
+        [data-testid="stHorizontalBlock"]:not(:has([data-testid="stHorizontalBlock"])):has([class*="st-key-car_dec_"]) > [data-testid="stColumn"] {
             width: 100% !important;
             min-width: 0 !important;
             flex: unset !important;
+        }
+
+        /* Janela Modal de Detalhes do Produto adaptada para Tela Cheia no Celular */
+        [data-testid="stDialog"] [role="dialog"] {
+            width: 96vw !important;
+            max-width: 96vw !important;
+            margin: 8px auto !important;
+            border-radius: 16px !important;
         }
 
         /* 5. Faixa de Vantagens em Grade 2x2 no Celular */
@@ -4419,37 +4427,44 @@ elif aba_loja == "carrinho":
 
                     for idx_c, item_c in enumerate(list(carrinho_atual)):
                         st.divider()
-                        cc_img, cc_info, cc_qtd, cc_sub = st.columns([0.9, 2.4, 1.5, 1.2])
-                        with cc_img:
-                            st.image(item_c.get("imagem_url") or "https://via.placeholder.com/120", width=70)
-                        with cc_info:
-                            st.markdown(f"**{item_c.get('titulo')}**")
-                            st.caption(f"Unitário: R$ {float(item_c.get('preco_venda', 0)):.2f}")
-                        with cc_qtd:
-                            b_m1, b_m2, b_m3 = st.columns([1, 1, 1])
-                            if b_m1.button("➖", key=f"car_dec_{item_c['id']}_{idx_c}"):
-                                if int(item_c.get("qtd", 1)) > 1:
-                                    item_c["qtd"] = int(item_c["qtd"]) - 1
-                                else:
-                                    carrinho_atual.pop(idx_c)
-                                st.session_state["carrinho_cliente"] = carrinho_atual
-                                sincronizar_carrinho_cliente()
-                                st.rerun()
-                            b_m2.markdown(f"<div style='text-align:center; padding-top:6px; font-weight:800;'>{item_c.get('qtd', 1)}</div>", unsafe_allow_html=True)
-                            if b_m3.button("➕", key=f"car_inc_{item_c['id']}_{idx_c}"):
-                                max_e = int(item_c.get("estoque") or 99)
-                                item_c["qtd"] = min(max_e, int(item_c.get("qtd", 1)) + 1)
-                                st.session_state["carrinho_cliente"] = carrinho_atual
-                                sincronizar_carrinho_cliente()
-                                st.rerun()
-                        with cc_sub:
-                            sub_it = float(item_c.get("preco_venda", 0)) * int(item_c.get("qtd", 1))
-                            st.markdown(f"**R$ {sub_it:.2f}**")
-                            if st.button("Remover", key=f"car_rem_{item_c['id']}_{idx_c}"):
+                        img_it_c = item_c.get("imagem_url") or "https://via.placeholder.com/120"
+                        pv_it_c = float(item_c.get("preco_venda", 0))
+                        qtd_it_c = int(item_c.get("qtd", 1))
+                        sub_it = pv_it_c * qtd_it_c
+                        st.markdown(
+                            f'<div style="display:flex; align-items:center; gap:12px; background:rgba(15,23,42,0.55); border:1px solid #334155; border-radius:12px; padding:10px 12px; margin-bottom:8px;">'
+                            f'<img src="{img_it_c}" style="width:62px; height:62px; border-radius:8px; object-fit:cover; flex-shrink:0; background:#0F172A;">'
+                            f'<div style="flex:1; min-width:0;">'
+                            f'<div style="font-weight:700; color:#F8FAFC; font-size:0.94rem; line-height:1.3; margin-bottom:4px;">{item_c.get("titulo")}</div>'
+                            f'<div style="font-size:0.8rem; color:#94A3B8;">Qtd: <b style="color:#F8FAFC;">{qtd_it_c}</b> &nbsp;•&nbsp; Unitário: R$ {pv_it_c:.2f}</div>'
+                            f'</div>'
+                            f'<div style="text-align:right; flex-shrink:0;">'
+                            f'<div style="font-size:0.7rem; color:#94A3B8;">Subtotal</div>'
+                            f'<div style="font-weight:800; color:#10B981; font-size:1.05rem;">R$ {sub_it:.2f}</div>'
+                            f'</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                        b_m1, b_m2, b_m3 = st.columns([1, 1, 1.2])
+                        if b_m1.button("➖ Diminuir", key=f"car_dec_{item_c['id']}_{idx_c}", width="stretch"):
+                            if qtd_it_c > 1:
+                                item_c["qtd"] = qtd_it_c - 1
+                            else:
                                 carrinho_atual.pop(idx_c)
-                                st.session_state["carrinho_cliente"] = carrinho_atual
-                                sincronizar_carrinho_cliente()
-                                st.rerun()
+                            st.session_state["carrinho_cliente"] = carrinho_atual
+                            sincronizar_carrinho_cliente()
+                            st.rerun()
+                        if b_m2.button("➕ Mais", key=f"car_inc_{item_c['id']}_{idx_c}", width="stretch"):
+                            max_e = int(item_c.get("estoque") or 99)
+                            item_c["qtd"] = min(max_e, qtd_it_c + 1)
+                            st.session_state["carrinho_cliente"] = carrinho_atual
+                            sincronizar_carrinho_cliente()
+                            st.rerun()
+                        if b_m3.button("🗑️ Remover", key=f"car_rem_{item_c['id']}_{idx_c}", width="stretch"):
+                            carrinho_atual.pop(idx_c)
+                            st.session_state["carrinho_cliente"] = carrinho_atual
+                            sincronizar_carrinho_cliente()
+                            st.rerun()
 
                     st.divider()
                     st.button(
@@ -5231,248 +5246,242 @@ else:
         p_all["_trilha_exibicao"] = trilha_t
 
     # =================================================================
-    # PÁGINA EXPANDIDA DE DETALHES DO PRODUTO (GALERIA + VÍDEO + FICHA + AVALIAÇÕES)
+    # MODAL POPUP DE DETALHES DO PRODUTO (ABRE NA FRENTE DA PÁGINA!)
     # =================================================================
-    prod_exp_id = st.session_state.get("produto_expandido_id")
-    prod_expandido = next((px for px in todos_produtos_vitrine if px.get("id") == prod_exp_id), None) if prod_exp_id else None
-
-    if prod_expandido:
+    @st.dialog("🛍️ Detalhes Completos do Produto", width="large")
+    def abrir_modal_detalhes_produto(prod_expandido: dict):
         gal_exp, extras_exp, video_exp, ficha_exp = obter_midia_ficha_produto(prod_expandido)
-        avals_exp, media_exp, qtd_av_exp = mapa_avals_vitrine.get(prod_expandido["id"], ([], 5.0, 0))
+        avals_exp, media_exp, qtd_av_exp = carregar_avaliacoes_do_produto(prod_expandido["id"])
 
-        with st.container(border=True):
-            c_voltar_p1, c_voltar_p2 = st.columns([3.5, 1.3])
-            with c_voltar_p1:
-                st.markdown(
-                    f"<span style='color:#60A5FA; font-size:0.84rem; font-weight:700;'>{prod_expandido.get('_trilha_exibicao', '📦 Catálogo')}</span>",
-                    unsafe_allow_html=True,
+        st.markdown(
+            f"<div style='color:#60A5FA; font-size:0.82rem; font-weight:700; margin-bottom:8px;'>{prod_expandido.get('_trilha_exibicao', '📦 Catálogo')}</div>",
+            unsafe_allow_html=True,
+        )
+
+        col_det_midia, col_det_compra = st.columns([1.25, 1.35])
+
+        with col_det_midia:
+            # Seletor de Mídia (Fotos da Galeria + Vídeo)
+            opcoes_midia_idx = list(range(len(gal_exp)))
+            if video_exp:
+                opcoes_midia_idx.append(-1)  # -1 representa a aba de Vídeo
+
+            if len(opcoes_midia_idx) > 1:
+                midia_sel_idx = st.pills(
+                    "Selecionar Mídia",
+                    opcoes_midia_idx,
+                    default=0,
+                    format_func=lambda idx_m: "🎬 Assistir Vídeo" if idx_m == -1 else (f"📸 Foto Principal" if idx_m == 0 else f"📸 Foto {idx_m + 1}"),
+                    label_visibility="collapsed",
+                    key=f"pills_midia_modal_{prod_expandido['id']}",
                 )
-            with c_voltar_p2:
-                if st.button("← Fechar Detalhes / Voltar à Vitrine", key="btn_fechar_prod_expandido", width="stretch"):
-                    st.session_state["produto_expandido_id"] = None
-                    st.rerun()
+            else:
+                midia_sel_idx = 0
 
-            col_det_midia, col_det_compra = st.columns([1.35, 1.35])
+            if midia_sel_idx is None:
+                midia_sel_idx = 0
 
-            with col_det_midia:
-                # Seletor de Mídia (Fotos da Galeria + Vídeo)
-                opcoes_midia_idx = list(range(len(gal_exp)))
-                if video_exp:
-                    opcoes_midia_idx.append(-1)  # -1 representa a aba de Vídeo
-
-                if len(opcoes_midia_idx) > 1:
-                    midia_sel_idx = st.pills(
-                        "Selecionar Mídia",
-                        opcoes_midia_idx,
-                        default=0,
-                        format_func=lambda idx_m: "🎬 Assistir Vídeo" if idx_m == -1 else (f"📸 Foto Principal" if idx_m == 0 else f"📸 Foto {idx_m + 1}"),
-                        label_visibility="collapsed",
-                        key=f"pills_midia_exp_{prod_expandido['id']}",
-                    )
-                else:
-                    midia_sel_idx = 0
-
-                if midia_sel_idx is None:
-                    midia_sel_idx = 0
-
-                if midia_sel_idx == -1 and video_exp:
-                    renderizar_player_video_produto(video_exp)
-                else:
-                    img_ativa_exp = gal_exp[midia_sel_idx] if 0 <= midia_sel_idx < len(gal_exp) else gal_exp[0]
-                    st.markdown(
-                        f"""
-                        <div style="width:100%; height:360px; border-radius:14px; overflow:hidden; background:#0F172A; border:1px solid #334155; display:flex; align-items:center; justify-content:center; margin-bottom:10px;">
-                            <img src="{img_ativa_exp}" style="max-width:100%; max-height:100%; object-fit:contain;">
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                # Miniaturas de todas as fotos da galeria
-                if len(gal_exp) > 1:
-                    cols_thumbs = st.columns(min(6, len(gal_exp)))
-                    for idx_th, u_th in enumerate(gal_exp[:6]):
-                        with cols_thumbs[idx_th]:
-                            borda_th = "2px solid #3B82F6" if idx_th == midia_sel_idx else "1px solid #334155"
-                            st.markdown(
-                                f"""
-                                <div style="width:100%; height:62px; border-radius:8px; overflow:hidden; border:{borda_th}; background:#0F172A; margin-bottom:6px;">
-                                    <img src="{u_th}" style="width:100%; height:100%; object-fit:cover;">
-                                </div>
-                                """,
-                                unsafe_allow_html=True,
-                            )
-
-            with col_det_compra:
-                st.markdown(f"<h2 style='margin:0 0 6px 0; color:#F8FAFC; font-weight:800;'>{prod_expandido['titulo']}</h2>", unsafe_allow_html=True)
-                estrelas_vis = "⭐" * int(round(media_exp))
-                txt_av_resumo = f"{estrelas_vis} **{media_exp:.1f}/5.0** ({qtd_av_exp} avaliação(ões) de clientes)" if qtd_av_exp > 0 else "⭐⭐⭐⭐⭐ **5.0** (Produto em Destaque • Seja o primeiro a avaliar!)"
-                st.markdown(txt_av_resumo)
-
-                tipo_exp = prod_expandido.get("tipo_venda", "direto")
-                est_exp = int(prod_expandido.get("estoque") or 0)
-                badge_destaque_exp = (
-                    '<span style="background:rgba(245, 158, 11, 0.2); color:#FBBF24; border:1px solid rgba(245, 158, 11, 0.45); padding:4px 10px; border-radius:20px; font-size:0.74rem; font-weight:800; margin-right:6px;">⭐ DESTAQUE</span>'
-                    if prod_expandido.get("destaque")
-                    else ""
-                )
-                if tipo_exp == "estoque_proprio":
-                    if est_exp > 0:
-                        st.markdown(f'{badge_destaque_exp}<span class="badge-status status-estoque">📦 Em Estoque ({est_exp} disponíveis)</span>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'{badge_destaque_exp}<span class="badge-status status-esgotado">❌ Esgotado</span>', unsafe_allow_html=True)
-                elif tipo_exp == "afiliado":
-                    st.markdown(f'{badge_destaque_exp}<span class="badge-status status-afiliado">⭐ Oferta de Loja Parceira</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown(f'{badge_destaque_exp}<span class="badge-status status-direto">🚚 Envio Direto com Rastreio</span>', unsafe_allow_html=True)
-
-                pv_exp = float(prod_expandido.get("preco_venda") or 0.0)
-                po_exp = float(prod_expandido.get("preco_original") or 0.0)
-                bloco_de_por_exp = ""
-                if po_exp > pv_exp and pv_exp > 0:
-                    pct_off_exp = int(round(((po_exp - pv_exp) / po_exp) * 100))
-                    bloco_de_por_exp = (
-                        f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">'
-                        f'<span style="text-decoration:line-through; color:#94A3B8; font-size:0.95rem;">De R$ {po_exp:.2f}</span>'
-                        f'<span style="background:#EF4444; color:#FFFFFF; padding:2px 8px; border-radius:6px; font-size:0.75rem; font-weight:800;">🔥 -{pct_off_exp}% OFF</span>'
-                        f'</div>'
-                    )
-
+            if midia_sel_idx == -1 and video_exp:
+                renderizar_player_video_produto(video_exp)
+            else:
+                img_ativa_exp = gal_exp[midia_sel_idx] if 0 <= midia_sel_idx < len(gal_exp) else gal_exp[0]
                 st.markdown(
-                    f'<div style="background:rgba(16, 185, 129, 0.12); border:1px solid rgba(16, 185, 129, 0.3); border-radius:12px; padding:14px 18px; margin:12px 0;">'
-                    f'<div style="font-size:0.82rem; color:#94A3B8; font-weight:600;">PREÇO ESPECIAL À VISTA NO PIX</div>'
-                    f'{bloco_de_por_exp}'
-                    f'<div style="font-size:2.1rem; font-weight:800; color:#10B981;">R$ {pv_exp:.2f}</div>'
-                    f'<div style="font-size:0.8rem; color:#34D399;">⚡ Aprovação imediata • Use cupom de desconto no carrinho</div>'
+                    f'<div style="width:100%; height:290px; border-radius:14px; overflow:hidden; background:#0F172A; border:1px solid #334155; display:flex; align-items:center; justify-content:center; margin-bottom:10px;">'
+                    f'<img src="{img_ativa_exp}" style="max-width:100%; max-height:100%; object-fit:contain;">'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
 
-                resumo_desc_exp = prod_expandido.get("descricao") or "Produto oficial Tags Informática com garantia e suporte dedicado."
-                st.write(resumo_desc_exp[:260] + ("..." if len(resumo_desc_exp) > 260 else ""))
+            # Miniaturas em linha flexível (nunca empilha verticalmente no celular)
+            if len(gal_exp) > 1:
+                thumbs_html = '<div style="display:flex; gap:8px; overflow-x:auto; padding-bottom:6px; margin-bottom:8px;">'
+                for idx_th, u_th in enumerate(gal_exp[:6]):
+                    borda_th = "2px solid #3B82F6" if idx_th == midia_sel_idx else "1px solid #334155"
+                    thumbs_html += (
+                        f'<div style="width:58px; height:58px; flex-shrink:0; border-radius:8px; overflow:hidden; border:{borda_th}; background:#0F172A;">'
+                        f'<img src="{u_th}" style="width:100%; height:100%; object-fit:cover;">'
+                        f'</div>'
+                    )
+                thumbs_html += '</div>'
+                st.markdown(thumbs_html, unsafe_allow_html=True)
 
-                st.divider()
-                if tipo_exp == "afiliado" and prod_expandido.get("link_afiliado"):
-                    st.link_button("🔥 Acessar Oferta na Loja Parceira ↗", prod_expandido["link_afiliado"], type="primary", width="stretch")
-                elif tipo_exp == "estoque_proprio" and est_exp <= 0:
-                    st.button("❌ Produto Indisponível no Momento", disabled=True, width="stretch")
+        with col_det_compra:
+            st.markdown(
+                f"<h3 style='margin:0 0 6px 0; color:#F8FAFC; font-weight:800; line-height:1.3;'>{prod_expandido['titulo']}</h3>",
+                unsafe_allow_html=True,
+            )
+            estrelas_vis = "⭐" * int(round(media_exp))
+            txt_av_resumo = (
+                f"{estrelas_vis} **{media_exp:.1f}/5.0** ({qtd_av_exp} avaliação(ões))"
+                if qtd_av_exp > 0
+                else "⭐⭐⭐⭐⭐ **5.0** (Produto em Destaque • Seja o primeiro a avaliar!)"
+            )
+            st.markdown(txt_av_resumo)
+
+            tipo_exp = prod_expandido.get("tipo_venda", "direto")
+            est_exp = int(prod_expandido.get("estoque") or 0)
+            badge_destaque_exp = (
+                '<span style="background:rgba(245, 158, 11, 0.2); color:#FBBF24; border:1px solid rgba(245, 158, 11, 0.45); padding:4px 10px; border-radius:20px; font-size:0.74rem; font-weight:800; margin-right:6px;">⭐ DESTAQUE</span>'
+                if prod_expandido.get("destaque")
+                else ""
+            )
+            if tipo_exp == "estoque_proprio":
+                if est_exp > 0:
+                    st.markdown(f'{badge_destaque_exp}<span class="badge-status status-estoque">📦 Em Estoque ({est_exp} disponíveis)</span>', unsafe_allow_html=True)
                 else:
-                    c_act_exp1, c_act_exp2 = st.columns(2)
-                    with c_act_exp1:
-                        if st.button("🛒 Guardar no Meu Carrinho", key=f"btn_exp_add_{prod_expandido['id']}", width="stretch"):
-                            adicionar_item_carrinho(prod_expandido, ir_para_checkout=False)
-                            st.toast(f"✅ {prod_expandido['titulo']} salvo no carrinho!")
-                            st.rerun()
-                    with c_act_exp2:
-                        if st.button("⚡ Comprar Agora no Pix", key=f"btn_exp_buy_{prod_expandido['id']}", type="primary", width="stretch"):
-                            adicionar_item_carrinho(prod_expandido, ir_para_checkout=True)
-                            st.rerun()
+                    st.markdown(f'{badge_destaque_exp}<span class="badge-status status-esgotado">❌ Esgotado</span>', unsafe_allow_html=True)
+            elif tipo_exp == "afiliado":
+                st.markdown(f'{badge_destaque_exp}<span class="badge-status status-afiliado">⭐ Oferta de Loja Parceira</span>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'{badge_destaque_exp}<span class="badge-status status-direto">🚚 Envio Direto com Rastreio</span>', unsafe_allow_html=True)
 
-            st.write("")
-            # ABAS COMPLETAS: DESCRIÇÃO + CARACTERÍSTICAS TÉCNICAS + AVALIAÇÕES E COMENTÁRIOS
-            tab_det_desc, tab_det_ficha, tab_det_aval = st.tabs([
-                "📝 Descrição Completa & Vídeo",
-                "⚙️ Características Técnicas (Ficha Técnica)",
-                f"⭐ Comentários & Avaliações ({qtd_av_exp})",
-            ])
-
-            with tab_det_desc:
-                st.markdown(f"#### 📖 Sobre **{prod_expandido['titulo']}**")
-                st.write(prod_expandido.get("descricao") or "Descrição detalhada disponível com nosso atendimento.")
-                if video_exp:
-                    st.markdown("#### 🎬 Vídeo Demonstrativo")
-                    renderizar_player_video_produto(video_exp)
-
-            with tab_det_ficha:
-                st.markdown("#### ⚙️ Especificações e Características Técnicas")
-                linhas_ficha_html = ""
-                for idx_f, item_f in enumerate(ficha_exp):
-                    bg_f = "rgba(30, 41, 59, 0.7)" if idx_f % 2 == 0 else "rgba(15, 23, 42, 0.7)"
-                    linhas_ficha_html += f"""
-                    <tr style="background:{bg_f};">
-                        <td style="padding:10px 14px; border:1px solid #334155; font-weight:700; color:#93C5FD; width:35%;">{item_f.get('nome', 'Característica')}</td>
-                        <td style="padding:10px 14px; border:1px solid #334155; color:#F8FAFC;">{item_f.get('valor', '-')}</td>
-                    </tr>
-                    """
-                st.markdown(
-                    f"""
-                    <table style="width:100%; border-collapse:collapse; border-radius:10px; overflow:hidden; margin-top:8px;">
-                        {linhas_ficha_html}
-                    </table>
-                    """,
-                    unsafe_allow_html=True,
+            pv_exp = float(prod_expandido.get("preco_venda") or 0.0)
+            po_exp = float(prod_expandido.get("preco_original") or 0.0)
+            bloco_de_por_exp = ""
+            if po_exp > pv_exp and pv_exp > 0:
+                pct_off_exp = int(round(((po_exp - pv_exp) / po_exp) * 100))
+                bloco_de_por_exp = (
+                    f'<div style="display:flex; align-items:center; gap:8px; margin-bottom:2px;">'
+                    f'<span style="text-decoration:line-through; color:#94A3B8; font-size:0.95rem;">De R$ {po_exp:.2f}</span>'
+                    f'<span style="background:#EF4444; color:#FFFFFF; padding:2px 8px; border-radius:6px; font-size:0.75rem; font-weight:800;">🔥 -{pct_off_exp}% OFF</span>'
+                    f'</div>'
                 )
 
-            with tab_det_aval:
-                col_av_lista, col_av_form = st.columns([1.5, 1.2])
-                with col_av_lista:
-                    st.markdown(f"#### 💬 O que os clientes dizem ({qtd_av_exp})")
-                    if not avals_exp:
-                        st.info("Este produto ainda não possui comentários. Seja o primeiro a avaliar no formulário ao lado!")
-                    else:
-                        for av_item in avals_exp:
-                            nota_int = max(1, min(5, int(av_item.get("nota", 5))))
-                            estrelas_str = "⭐" * nota_int
-                            with st.container(border=True):
-                                st.markdown(
-                                    f"**{estrelas_str} {av_item.get('titulo_avaliacao') or 'Excelente produto!'}** "
-                                    f"<span style='background:rgba(16,185,129,0.15); color:#34D399; padding:2px 7px; border-radius:8px; font-size:0.7rem; font-weight:700;'>✔ Avaliação Verificada</span>",
-                                    unsafe_allow_html=True,
-                                )
-                                st.write(av_item.get("comentario", ""))
-                                st.caption(f"👤 Por **{av_item.get('cliente_nome', 'Cliente')}**")
+            st.markdown(
+                f'<div style="background:rgba(16, 185, 129, 0.12); border:1px solid rgba(16, 185, 129, 0.3); border-radius:12px; padding:12px 16px; margin:10px 0;">'
+                f'<div style="font-size:0.78rem; color:#94A3B8; font-weight:600;">PREÇO ESPECIAL À VISTA NO PIX</div>'
+                f'{bloco_de_por_exp}'
+                f'<div style="font-size:1.95rem; font-weight:800; color:#10B981;">R$ {pv_exp:.2f}</div>'
+                f'<div style="font-size:0.78rem; color:#34D399;">⚡ Aprovação imediata • Use cupom de desconto no carrinho</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
-                with col_av_form:
-                    with st.container(border=True):
-                        st.markdown("#### ✍️ Avaliar este Produto")
-                        st.caption("Compartilhe sua experiência ou dúvida sobre este produto:")
-                        with st.form(f"form_avaliar_prod_{prod_expandido['id']}", clear_on_submit=True):
-                            av_nome_in = st.text_input(
-                                "Seu Nome *",
-                                value=cliente_atual.get("nome", "") if cliente_atual else "",
-                                placeholder="Ex: Carlos Eduardo",
-                            )
-                            av_nota_in = st.selectbox(
-                                "Sua Nota (Estrelas) *",
-                                [
-                                    (5, "⭐⭐⭐⭐⭐ (5/5) — Excelente / Recomendo muito"),
-                                    (4, "⭐⭐⭐⭐ (4/5) — Muito Bom"),
-                                    (3, "⭐⭐⭐ (3/5) — Bom / Regular"),
-                                    (2, "⭐⭐ (2/5) — Abaixo do esperado"),
-                                    (1, "⭐ (1/5) — Insatisfeito"),
-                                ],
-                                format_func=lambda x: x[1],
-                            )
-                            av_tit_in = st.text_input("Título do Comentário", placeholder="Ex: Ótimo custo-benefício e entrega rápida!")
-                            av_com_in = st.text_area("Seu Comentário ou Avaliação *", height=90, placeholder="Conte o que achou da qualidade, atendimento ou conteúdo...")
-                            if st.form_submit_button("🌟 Publicar Avaliação", type="primary", width="stretch"):
-                                if not (av_nome_in.strip() and av_com_in.strip()):
-                                    st.error("Preencha seu nome e seu comentário.")
-                                else:
-                                    nova_av_obj = {
-                                        "id": int(datetime.now().timestamp()),
-                                        "produto_id": prod_expandido["id"],
-                                        "cliente_id": cliente_atual.get("id") if cliente_atual else None,
-                                        "cliente_nome": av_nome_in.strip(),
-                                        "nota": int(av_nota_in[0]),
-                                        "titulo_avaliacao": av_tit_in.strip() or "Recomendo!",
-                                        "comentario": av_com_in.strip(),
-                                        "compra_verificada": True,
-                                    }
-                                    try:
-                                        payload_av_db = dict(nova_av_obj)
-                                        payload_av_db.pop("id", None)
-                                        r_av_ins = supabase.table("avaliacoes_produtos").insert(payload_av_db).execute()
-                                        if r_av_ins.data and r_av_ins.data[0].get("id"):
-                                            nova_av_obj["id"] = r_av_ins.data[0]["id"]
-                                    except Exception:
-                                        pass
-                                    st.session_state.setdefault("avaliacoes_produtos_local", []).append(nova_av_obj)
-                                    salvar_estado_persistente()
-                                    st.success("🎉 Obrigado! Sua avaliação foi publicada com sucesso!")
-                                    st.rerun()
+            resumo_desc_exp = prod_expandido.get("descricao") or "Produto oficial Tags Informática com garantia e suporte dedicado."
+            st.write(resumo_desc_exp[:220] + ("..." if len(resumo_desc_exp) > 220 else ""))
+
+            if tipo_exp == "afiliado" and prod_expandido.get("link_afiliado"):
+                st.link_button("🔥 Acessar Oferta na Loja Parceira ↗", prod_expandido["link_afiliado"], type="primary", width="stretch")
+            elif tipo_exp == "estoque_proprio" and est_exp <= 0:
+                st.button("❌ Produto Indisponível no Momento", disabled=True, width="stretch")
+            else:
+                c_act_exp1, c_act_exp2 = st.columns(2)
+                with c_act_exp1:
+                    if st.button("🛒 + Carrinho", key=f"btn_exp_add_{prod_expandido['id']}", width="stretch"):
+                        adicionar_item_carrinho(prod_expandido, ir_para_checkout=False)
+                        st.session_state[f"_adicionado_modal_{prod_expandido['id']}"] = True
+                with c_act_exp2:
+                    if st.button("⚡ Comprar no Pix", key=f"btn_exp_buy_{prod_expandido['id']}", type="primary", width="stretch"):
+                        adicionar_item_carrinho(prod_expandido, ir_para_checkout=True)
+                        st.rerun()
+
+                if st.session_state.get(f"_adicionado_modal_{prod_expandido['id']}"):
+                    st.success("✅ Produto salvo no seu carrinho!")
+                    if st.button("🛍️ Ir para o Carrinho e Finalizar →", key=f"btn_ir_car_modal_{prod_expandido['id']}", type="primary", width="stretch"):
+                        st.session_state[f"_adicionado_modal_{prod_expandido['id']}"] = False
+                        ir_para_aba_loja("carrinho")
+                        st.rerun()
 
         st.divider()
+        # ABAS COMPLETAS DENTRO DO MODAL: DESCRIÇÃO + FICHA TÉCNICA + AVALIAÇÕES
+        tab_det_desc, tab_det_ficha, tab_det_aval = st.tabs([
+            "📝 Descrição & Vídeo",
+            "⚙️ Ficha Técnica",
+            f"⭐ Avaliações ({qtd_av_exp})",
+        ])
+
+        with tab_det_desc:
+            st.markdown(f"#### 📖 Sobre **{prod_expandido['titulo']}**")
+            st.write(prod_expandido.get("descricao") or "Descrição detalhada disponível com nosso atendimento.")
+            if video_exp:
+                st.markdown("#### 🎬 Vídeo Demonstrativo")
+                renderizar_player_video_produto(video_exp)
+
+        with tab_det_ficha:
+            st.markdown("#### ⚙️ Especificações e Características Técnicas")
+            linhas_ficha_html = ""
+            for idx_f, item_f in enumerate(ficha_exp):
+                bg_f = "rgba(30, 41, 59, 0.7)" if idx_f % 2 == 0 else "rgba(15, 23, 42, 0.7)"
+                linhas_ficha_html += (
+                    f'<tr style="background:{bg_f};">'
+                    f'<td style="padding:10px 14px; border:1px solid #334155; font-weight:700; color:#93C5FD; width:38%;">{item_f.get("nome", "Característica")}</td>'
+                    f'<td style="padding:10px 14px; border:1px solid #334155; color:#F8FAFC;">{item_f.get("valor", "-")}</td>'
+                    f'</tr>'
+                )
+            st.markdown(
+                f'<table style="width:100%; border-collapse:collapse; border-radius:10px; overflow:hidden; margin-top:8px;">{linhas_ficha_html}</table>',
+                unsafe_allow_html=True,
+            )
+
+        with tab_det_aval:
+            st.markdown(f"#### 💬 O que os clientes dizem ({qtd_av_exp})")
+            if not avals_exp:
+                st.info("Este produto ainda não possui comentários. Seja o primeiro a avaliar abaixo!")
+            else:
+                for av_item in avals_exp:
+                    nota_int = max(1, min(5, int(av_item.get("nota", 5))))
+                    estrelas_str = "⭐" * nota_int
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**{estrelas_str} {av_item.get('titulo_avaliacao') or 'Excelente produto!'}** "
+                            f"<span style='background:rgba(16,185,129,0.15); color:#34D399; padding:2px 7px; border-radius:8px; font-size:0.7rem; font-weight:700;'>✔ Avaliação Verificada</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.write(av_item.get("comentario", ""))
+                        st.caption(f"👤 Por **{av_item.get('cliente_nome', 'Cliente')}**")
+
+            st.write("")
+            with st.container(border=True):
+                st.markdown("#### ✍️ Avaliar este Produto")
+                with st.form(f"form_avaliar_prod_modal_{prod_expandido['id']}", clear_on_submit=True):
+                    av_nome_in = st.text_input(
+                        "Seu Nome *",
+                        value=cliente_atual.get("nome", "") if cliente_atual else "",
+                        placeholder="Ex: Carlos Eduardo",
+                    )
+                    av_nota_in = st.selectbox(
+                        "Sua Nota (Estrelas) *",
+                        [
+                            (5, "⭐⭐⭐⭐⭐ (5/5) — Excelente / Recomendo muito"),
+                            (4, "⭐⭐⭐⭐ (4/5) — Muito Bom"),
+                            (3, "⭐⭐⭐ (3/5) — Bom / Regular"),
+                            (2, "⭐⭐ (2/5) — Abaixo do esperado"),
+                            (1, "⭐ (1/5) — Insatisfeito"),
+                        ],
+                        format_func=lambda x: x[1],
+                    )
+                    av_tit_in = st.text_input("Título do Comentário", placeholder="Ex: Ótimo custo-benefício e entrega rápida!")
+                    av_com_in = st.text_area("Seu Comentário ou Avaliação *", height=85, placeholder="Conte o que achou da qualidade, atendimento ou conteúdo...")
+                    if st.form_submit_button("🌟 Publicar Avaliação", type="primary", width="stretch"):
+                        if not (av_nome_in.strip() and av_com_in.strip()):
+                            st.error("Preencha seu nome e seu comentário.")
+                        else:
+                            nova_av_obj = {
+                                "id": int(datetime.now().timestamp()),
+                                "produto_id": prod_expandido["id"],
+                                "cliente_id": cliente_atual.get("id") if cliente_atual else None,
+                                "cliente_nome": av_nome_in.strip(),
+                                "nota": int(av_nota_in[0]),
+                                "titulo_avaliacao": av_tit_in.strip() or "Recomendo!",
+                                "comentario": av_com_in.strip(),
+                                "compra_verificada": True,
+                            }
+                            try:
+                                payload_av_db = dict(nova_av_obj)
+                                payload_av_db.pop("id", None)
+                                r_av_ins = supabase.table("avaliacoes_produtos").insert(payload_av_db).execute()
+                                if r_av_ins.data and r_av_ins.data[0].get("id"):
+                                    nova_av_obj["id"] = r_av_ins.data[0]["id"]
+                            except Exception:
+                                pass
+                            st.session_state.setdefault("avaliacoes_produtos_local", []).append(nova_av_obj)
+                            salvar_estado_persistente()
+                            st.success("🎉 Obrigado! Sua avaliação foi publicada com sucesso!")
+
+        st.write("")
+        if st.button("← Fechar Detalhes e Continuar na Vitrine", key=f"btn_fechar_modal_{prod_expandido['id']}", width="stretch"):
+            st.session_state["produto_expandido_id"] = None
+            st.rerun()
 
     produtos_vitrine = []
     for p in todos_produtos_vitrine:
@@ -5564,7 +5573,7 @@ else:
 
                     if st.button("🔍 Ver Detalhes / Fotos & Vídeo", key=f"btn_ver_det_{p['id']}", width="stretch"):
                         st.session_state["produto_expandido_id"] = p["id"]
-                        st.rerun()
+                        abrir_modal_detalhes_produto(p)
 
                     if tipo == "afiliado" and p.get("link_afiliado"):
                         st.link_button("Ver Oferta na Loja", p["link_afiliado"], width="stretch")
