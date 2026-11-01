@@ -42,6 +42,13 @@ st.markdown(
 
     html, body, [class*="css"] {
         font-family: 'Plus Jakarta Sans', sans-serif !important;
+        -webkit-text-size-adjust: 100% !important;
+        -webkit-tap-highlight-color: transparent !important;
+    }
+
+    html, body, .stApp {
+        overflow-x: hidden !important;
+        max-width: 100vw !important;
     }
 
     /* Top Promocional Loja */
@@ -50,22 +57,122 @@ st.markdown(
         color: #0F172A;
         font-weight: 700;
         font-size: 0.82rem;
-        padding: 6px 16px;
+        padding: 7px 16px;
         border-radius: 8px;
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 10px;
         margin-bottom: 12px;
-        letter-spacing: 0.3px;
+        letter-spacing: 0.2px;
     }
-    .top-links { display: flex; gap: 16px; }
-    .top-links a { color: #0F172A; text-decoration: none; font-weight: 700; }
+    .top-promo-text {
+        font-weight: 800;
+        line-height: 1.35;
+    }
+    .top-links {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+    .top-links a { color: #0F172A; text-decoration: none; font-weight: 800; }
+
+    /* Cabeçalho Responsivo (Logo, Slogan e Pílulas de Ação) */
+    .header-brand-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+    .header-brand-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+    .header-status-badge {
+        background: rgba(34, 197, 94, 0.15);
+        color: #22c55e;
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        padding: 2px 9px;
+        border-radius: 20px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+    .header-slogan-text {
+        color: #94A3B8;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+    }
+    .header-actions-wrap {
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .header-action-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        text-decoration: none;
+        white-space: nowrap;
+    }
+
+    /* Faixa de Vantagens */
+    .benefits-bar-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        background: rgba(15, 23, 42, 0.75);
+        border: 1px solid rgba(51, 65, 85, 0.7);
+        border-radius: 10px;
+        padding: 10px 16px;
+        margin-top: 6px;
+        margin-bottom: 14px;
+    }
+    .benefits-bar-item {
+        text-align: center;
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #E2E8F0;
+    }
+
+    /* Botão Flutuante WhatsApp (acima da barra do Streamlit Cloud) */
+    .whatsapp-float-btn {
+        position: fixed;
+        bottom: calc(74px + env(safe-area-inset-bottom, 0px));
+        right: 18px;
+        background-color: #25D366;
+        color: white !important;
+        border-radius: 50%;
+        width: 56px;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        box-shadow: 0 4px 15px rgba(37, 211, 102, 0.45);
+        z-index: 999999;
+        text-decoration: none;
+        transition: transform 0.2s ease;
+    }
+    .whatsapp-float-btn:hover {
+        transform: scale(1.08);
+    }
 
     /* Logo & Nav */
     .brand-logo {
-        font-size: 2.2rem;
+        font-size: 1.95rem;
         font-weight: 800;
-        letter-spacing: -1px;
+        letter-spacing: -0.8px;
         color: #FFFFFF;
         text-decoration: none;
         display: flex;
@@ -324,6 +431,197 @@ st.markdown(
         color: #10B981;
         font-size: 0.72rem;
         font-weight: 600;
+    }
+
+    /* =================================================================
+       RESPONSIVIDADE MOBILE COMPLETA (ANDROID & iOS / SAFARI)
+       ================================================================= */
+    /* Previne o auto-zoom do Safari no iPhone ao tocar em inputs (<16px) */
+    @supports (-webkit-touch-callout: none) {
+        input, select, textarea, [data-baseweb="input"] input, [data-baseweb="textarea"] textarea {
+            font-size: 16px !important;
+        }
+    }
+
+    @media screen and (max-width: 768px) {
+        .block-container {
+            padding-top: 0.5rem !important;
+            padding-left: 0.65rem !important;
+            padding-right: 0.65rem !important;
+            padding-bottom: 4.5rem !important;
+        }
+
+        input, select, textarea, [data-baseweb="input"] input, [data-baseweb="textarea"] textarea {
+            font-size: 16px !important;
+        }
+
+        /* 1. Barra Topo Amarela Compacta e Centralizada no Celular */
+        .top-promo-bar {
+            flex-direction: column !important;
+            justify-content: center !important;
+            text-align: center !important;
+            padding: 6px 10px !important;
+            gap: 4px !important;
+            font-size: 0.7rem !important;
+            border-radius: 8px !important;
+            margin-bottom: 8px !important;
+        }
+        .top-promo-text {
+            font-size: 0.71rem !important;
+            line-height: 1.3 !important;
+        }
+        .top-links {
+            justify-content: center !important;
+            gap: 6px 10px !important;
+            font-size: 0.67rem !important;
+            border-top: 1px solid rgba(15, 23, 42, 0.15) !important;
+            padding-top: 4px !important;
+            width: 100% !important;
+        }
+
+        /* 2. Cabeçalho Principal (Logo + Busca + Botões WhatsApp/Carrinho 50/50) */
+        .brand-logo {
+            font-size: 1.45rem !important;
+        }
+        .header-brand-row {
+            justify-content: space-between !important;
+            width: 100% !important;
+        }
+        .header-slogan-text {
+            font-size: 0.73rem !important;
+        }
+        .header-actions-wrap {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 6px !important;
+            width: 100% !important;
+            justify-content: stretch !important;
+        }
+        .header-action-pill {
+            width: 100% !important;
+            padding: 6px 8px !important;
+            font-size: 0.72rem !important;
+            box-sizing: border-box !important;
+        }
+
+        /* 3. Menu de Navegação Principal e Atalhos do Rodapé em Grade 2x2 Compacta no Celular */
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_loja_nav_"]),
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_ft_"]) {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 6px !important;
+        }
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_loja_nav_"]) > [data-testid="stColumn"]:first-child,
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_ft_"]) > [data-testid="stColumn"]:first-child {
+            grid-column: 1 / -1 !important;
+        }
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_loja_nav_"]) > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_ft_"]) > [data-testid="stColumn"] {
+            width: 100% !important;
+            min-width: 0 !important;
+            flex: unset !important;
+        }
+        [class*="st-key-btn_loja_nav_"] button,
+        [class*="st-key-btn_ft_"] button {
+            min-height: 38px !important;
+            padding: 6px 8px !important;
+            font-size: 0.78rem !important;
+        }
+        [class*="st-key-btn_loja_nav_"] button p,
+        [class*="st-key-btn_ft_"] button p {
+            font-size: 0.78rem !important;
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+        }
+
+        /* 4. Manter botões de Ação do Card (+ Carrinho | Comprar) lado a lado no Celular */
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_add_car_"]),
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_exp_add_"]) {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 6px !important;
+        }
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_add_car_"]) > [data-testid="stColumn"],
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-btn_exp_add_"]) > [data-testid="stColumn"] {
+            width: 100% !important;
+            min-width: 0 !important;
+            flex: unset !important;
+        }
+
+        /* Manter botões (- 1 +) de quantidade no carrinho na mesma linha no Celular */
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-car_dec_"]) {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr 1fr !important;
+            gap: 4px !important;
+            align-items: center !important;
+        }
+        [data-testid="stHorizontalBlock"]:has([class*="st-key-car_dec_"]) > [data-testid="stColumn"] {
+            width: 100% !important;
+            min-width: 0 !important;
+            flex: unset !important;
+        }
+
+        /* 5. Faixa de Vantagens em Grade 2x2 no Celular */
+        .benefits-bar-grid {
+            grid-template-columns: 1fr 1fr !important;
+            gap: 6px !important;
+            padding: 8px 10px !important;
+            margin-top: 4px !important;
+            margin-bottom: 10px !important;
+        }
+        .benefits-bar-item {
+            font-size: 0.7rem !important;
+            line-height: 1.25 !important;
+        }
+
+        /* 6. Hero Banner e Cards mais Compactos no Celular */
+        .hero-banner {
+            padding: 18px 16px !important;
+            border-radius: 12px !important;
+            margin-bottom: 16px !important;
+        }
+        .hero-text h1 {
+            font-size: 1.32rem !important;
+            line-height: 1.25 !important;
+            margin-bottom: 6px !important;
+        }
+        .hero-text p {
+            font-size: 0.84rem !important;
+            margin-bottom: 10px !important;
+        }
+        .hero-badges {
+            gap: 6px !important;
+        }
+        .hero-badge-item {
+            font-size: 0.7rem !important;
+            padding: 4px 10px !important;
+        }
+        .section-title {
+            font-size: 1.18rem !important;
+            margin: 6px 0 12px 0 !important;
+        }
+        .img-box {
+            height: 185px !important;
+        }
+        .prod-title {
+            font-size: 0.95rem !important;
+            min-height: unset !important;
+        }
+        .prod-desc {
+            min-height: unset !important;
+        }
+        .prod-price {
+            font-size: 1.35rem !important;
+            margin-bottom: 8px !important;
+        }
+        .whatsapp-float-btn {
+            bottom: calc(78px + env(safe-area-inset-bottom, 0px)) !important;
+            right: 14px !important;
+            width: 50px !important;
+            height: 50px !important;
+            font-size: 25px !important;
+        }
     }
     </style>
     """,
@@ -890,10 +1188,6 @@ def obter_sid_navegador() -> str:
         sid_limpo = sid_url.strip()
     else:
         sid_limpo = "padrao_local" if "admin" in st.query_params else f"cli_{uuid.uuid4().hex[:10]}"
-        try:
-            st.query_params["sid"] = sid_limpo
-        except Exception:
-            pass
     st.session_state["_sid_navegador"] = sid_limpo
     return sid_limpo
 
@@ -930,6 +1224,11 @@ def salvar_config_loja_supabase(cfg_dict: dict = None):
 def salvar_estado_persistente():
     dados_atuais = carregar_estado_persistente()
     sid_atual = obter_sid_navegador()
+    if "admin" not in st.query_params and st.query_params.get("sid") != sid_atual:
+        try:
+            st.query_params["sid"] = sid_atual
+        except Exception:
+            pass
     mapa_sids = dados_atuais.get("sessoes_por_sid")
     if not isinstance(mapa_sids, dict):
         mapa_sids = {}
@@ -3626,16 +3925,14 @@ local_topo = cfg_loja.get("localizacao_cabecalho") or "📍 Manaus/AM • Envio 
 slogan_topo = cfg_loja.get("slogan_cabecalho") or "Cursos, Mentorias & Tecnologia Oficial"
 
 st.markdown(
-    f"""
-    <div class="top-promo-bar">
-        <div>{texto_promo_topo}</div>
-        <div class="top-links">
-            <span>{local_topo}</span>
-            <a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1,%20gostaria%20de%20informa%C3%A7%C3%B5es%20sobre%20os%20cursos%20e%20produtos!" target="_blank">💬 CENTRAL WHATSAPP</a>
-            <span>🔒 COMPRA 100% SEGURA</span>
-        </div>
-    </div>
-    """,
+    f'<div class="top-promo-bar">'
+    f'<div class="top-promo-text">{texto_promo_topo}</div>'
+    f'<div class="top-links">'
+    f'<span>{local_topo}</span>'
+    f'<a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1,%20gostaria%20de%20informa%C3%A7%C3%B5es%20sobre%20os%20cursos%20e%20produtos!" target="_blank">💬 CENTRAL WHATSAPP</a>'
+    f'<span>🔒 COMPRA 100% SEGURA</span>'
+    f'</div>'
+    f'</div>',
     unsafe_allow_html=True,
 )
 
@@ -3655,28 +3952,20 @@ with st.container(border=True):
             st.caption(f"{slogan_topo} • {cfg_loja.get('status_loja', '🟢 Aberto')}")
         else:
             st.markdown(
-                f"""
-                <div style="display:flex; flex-direction:column; gap:2px;">
-                    <div style="display:flex; align-items:center; gap:10px;">
-                        <div class="brand-logo" style="font-size:1.95rem;">
-                            {cfg_loja.get('nome_loja', 'Tags Informática')}<span class="brand-dot"></span>
-                        </div>
-                        <span style="background:rgba(34, 197, 94, 0.15); color:#22c55e; border:1px solid rgba(34, 197, 94, 0.3); padding:2px 9px; border-radius:20px; font-size:0.72rem; font-weight:700;">
-                            {cfg_loja.get('status_loja', '🟢 Aberto')}
-                        </span>
-                    </div>
-                    <div style="color:#94A3B8; font-size:0.78rem; font-weight:600; letter-spacing:0.2px;">
-                        {slogan_topo}
-                    </div>
-                </div>
-                """,
+                f'<div class="header-brand-wrap">'
+                f'<div class="header-brand-row">'
+                f'<div class="brand-logo">{cfg_loja.get("nome_loja", "Tags Informática")}<span class="brand-dot"></span></div>'
+                f'<span class="header-status-badge">{cfg_loja.get("status_loja", "🟢 Aberto")}</span>'
+                f'</div>'
+                f'<div class="header-slogan-text">{slogan_topo}</div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
     with col_search:
         termo_busca = st.text_input(
             "Buscar produtos na loja",
-            placeholder="🔍 O que você está buscando hoje? (Cursos, mentorias, informática...)",
+            placeholder="🔍 Buscar cursos, mentorias, informática...",
             label_visibility="collapsed",
         )
 
@@ -3684,30 +3973,18 @@ with st.container(border=True):
         if cliente_atual:
             primeiro_nome_cli = (cliente_atual.get("nome") or "Cliente").split()[0]
             st.markdown(
-                f"""
-                <div style="display:flex; justify-content:flex-end; align-items:center; gap:8px; flex-wrap:wrap;">
-                    <span style="background:rgba(59, 130, 246, 0.16); color:#60A5FA; border:1px solid rgba(59, 130, 246, 0.35); padding:6px 12px; border-radius:20px; font-size:0.8rem; font-weight:700;">
-                        👤 Olá, {primeiro_nome_cli}
-                    </span>
-                    <span style="background:rgba(16, 185, 129, 0.16); color:#34D399; border:1px solid rgba(16, 185, 129, 0.35); padding:6px 12px; border-radius:20px; font-size:0.8rem; font-weight:700;">
-                        🛒 {qtd_itens_carrinho} item(ns) • R$ {subtotal_carrinho_topo:.2f}
-                    </span>
-                </div>
-                """,
+                f'<div class="header-actions-wrap">'
+                f'<span class="header-action-pill" style="background:rgba(59, 130, 246, 0.16); color:#60A5FA; border:1px solid rgba(59, 130, 246, 0.35);">👤 Olá, {primeiro_nome_cli}</span>'
+                f'<span class="header-action-pill" style="background:rgba(16, 185, 129, 0.16); color:#34D399; border:1px solid rgba(16, 185, 129, 0.35);">🛒 {qtd_itens_carrinho} item(ns) • R$ {subtotal_carrinho_topo:.2f}</span>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                f"""
-                <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; flex-wrap:wrap;">
-                    <a href="https://wa.me/55{whats_num_clean}" target="_blank" style="text-decoration:none; background:rgba(34,197,94,0.14); color:#4ADE80; border:1px solid rgba(34,197,94,0.3); padding:6px 11px; border-radius:20px; font-weight:700; font-size:0.78rem;">
-                        💬 Suporte WhatsApp
-                    </a>
-                    <span style="background:rgba(255,255,255,0.07); color:#F8FAFC; border:1px solid rgba(255,255,255,0.15); padding:6px 12px; border-radius:20px; font-size:0.8rem; font-weight:700;">
-                        🛒 Carrinho ({qtd_itens_carrinho}) • R$ {subtotal_carrinho_topo:.2f}
-                    </span>
-                </div>
-                """,
+                f'<div class="header-actions-wrap">'
+                f'<a href="https://wa.me/55{whats_num_clean}" target="_blank" class="header-action-pill" style="background:rgba(34,197,94,0.14); color:#4ADE80; border:1px solid rgba(34,197,94,0.3);">💬 Suporte WhatsApp</a>'
+                f'<span class="header-action-pill" style="background:rgba(255,255,255,0.07); color:#F8FAFC; border:1px solid rgba(255,255,255,0.15);">🛒 Carrinho ({qtd_itens_carrinho}) • R$ {subtotal_carrinho_topo:.2f}</span>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
@@ -3777,14 +4054,12 @@ if cfg_loja.get("exibir_barra_vantagens", True):
     v3_t = cfg_loja.get("vantagem_3") or "🛡️ Compra 100% Garantida"
     v4_t = cfg_loja.get("vantagem_4") or "🎓 Cursos com Certificado"
     st.markdown(
-        f"""
-        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:10px; background:rgba(15, 23, 42, 0.75); border:1px solid rgba(51, 65, 85, 0.7); border-radius:10px; padding:10px 16px; margin-top:6px; margin-bottom:14px;">
-            <div style="text-align:center; font-size:0.8rem; font-weight:700; color:#E2E8F0;">{v1_t}</div>
-            <div style="text-align:center; font-size:0.8rem; font-weight:700; color:#E2E8F0;">{v2_t}</div>
-            <div style="text-align:center; font-size:0.8rem; font-weight:700; color:#E2E8F0;">{v3_t}</div>
-            <div style="text-align:center; font-size:0.8rem; font-weight:700; color:#E2E8F0;">{v4_t}</div>
-        </div>
-        """,
+        f'<div class="benefits-bar-grid">'
+        f'<div class="benefits-bar-item">{v1_t}</div>'
+        f'<div class="benefits-bar-item">{v2_t}</div>'
+        f'<div class="benefits-bar-item">{v3_t}</div>'
+        f'<div class="benefits-bar-item">{v4_t}</div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -5394,29 +5669,8 @@ rodape_html_oficial = (
 )
 st.markdown(rodape_html_oficial, unsafe_allow_html=True)
 
-# Botão Flutuante do WhatsApp
+# Botão Flutuante do WhatsApp (posicionado acima da barra inferior do Streamlit Cloud / iOS Safe Area)
 st.markdown(
-    f"""
-    <a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1!%20Vim%20pelo%20site%20da%20Tags%20Inform%C3%A1tica" target="_blank" style="
-        position: fixed;
-        bottom: 24px;
-        right: 24px;
-        background-color: #25D366;
-        color: white;
-        border-radius: 50%;
-        width: 60px;
-        height: 60px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 32px;
-        box-shadow: 0 4px 15px rgba(37, 211, 102, 0.4);
-        z-index: 999999;
-        text-decoration: none;
-        transition: transform 0.2s ease;
-    " onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">
-        💬
-    </a>
-    """,
+    f'<a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1!%20Vim%20pelo%20site%20da%20Tags%20Inform%C3%A1tica" target="_blank" class="whatsapp-float-btn" title="Atendimento WhatsApp">💬</a>',
     unsafe_allow_html=True,
 )
