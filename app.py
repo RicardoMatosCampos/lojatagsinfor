@@ -1190,17 +1190,29 @@ ARQUIVO_SESSOES = ".sessoes_persistentes.json"
 
 
 def obter_sid_navegador() -> str:
-    """Garante um identificador de sessão individual por navegador (isolando clientes diferentes)."""
-    if "_sid_navegador" in st.session_state and st.session_state["_sid_navegador"]:
-        return st.session_state["_sid_navegador"]
+    """
+    Garante um identificador de sessão individual e exclusivo por navegador (`?sid=s_...`).
+    Fixa o `sid` imediatamente na URL para sobreviver a qualquer atualização de página (F5),
+    sem jamais compartilhar o login com outros dispositivos/navegadores.
+    """
     sid_url = st.query_params.get("sid")
     if isinstance(sid_url, list):
         sid_url = sid_url[0] if sid_url else None
-    if sid_url and isinstance(sid_url, str) and len(sid_url.strip()) >= 6:
+    if sid_url and isinstance(sid_url, str) and len(sid_url.strip()) >= 6 and sid_url.strip() != "padrao_local":
         sid_limpo = sid_url.strip()
+        st.session_state["_sid_navegador"] = sid_limpo
+        return sid_limpo
+
+    if "_sid_navegador" in st.session_state and st.session_state["_sid_navegador"] and st.session_state["_sid_navegador"] != "padrao_local":
+        sid_limpo = st.session_state["_sid_navegador"]
     else:
-        sid_limpo = "padrao_local" if "admin" in st.query_params else f"cli_{uuid.uuid4().hex[:10]}"
-    st.session_state["_sid_navegador"] = sid_limpo
+        sid_limpo = f"s_{uuid.uuid4().hex[:12]}"
+        st.session_state["_sid_navegador"] = sid_limpo
+
+    try:
+        st.query_params["sid"] = sid_limpo
+    except Exception:
+        pass
     return sid_limpo
 
 
@@ -1236,7 +1248,7 @@ def salvar_config_loja_supabase(cfg_dict: dict = None):
 def salvar_estado_persistente():
     dados_atuais = carregar_estado_persistente()
     sid_atual = obter_sid_navegador()
-    if "admin" not in st.query_params and st.query_params.get("sid") != sid_atual:
+    if st.query_params.get("sid") != sid_atual:
         try:
             st.query_params["sid"] = sid_atual
         except Exception:
@@ -1244,21 +1256,28 @@ def salvar_estado_persistente():
     mapa_sids = dados_atuais.get("sessoes_por_sid")
     if not isinstance(mapa_sids, dict):
         mapa_sids = {}
+    mapa_sids.pop("padrao_local", None)
 
-    mapa_sids[sid_atual] = {
+    pacote_sessao_sid = {
         "cliente_logado": st.session_state.get("cliente_logado"),
         "carrinho_cliente": st.session_state.get("carrinho_cliente", []),
         "aba_loja_cliente": st.session_state.get("aba_loja_cliente", "vitrine"),
-        "updated_at": datetime.now().isoformat(),
-    }
-
-    dados_atuais.update({
         "admin_logado": bool(st.session_state.get("admin_logado", False)),
         "auth_user": st.session_state.get("auth_user"),
         "menu_admin_nav": st.session_state.get("menu_admin_nav", "🏠 Início"),
-        "cliente_logado": st.session_state.get("cliente_logado"),
-        "carrinho_cliente": st.session_state.get("carrinho_cliente", []),
-        "aba_loja_cliente": st.session_state.get("aba_loja_cliente", "vitrine"),
+        "sub_aba_cli": st.session_state.get("sub_aba_cli", "📋 Lista de clientes"),
+        "sub_aba_cup": st.session_state.get("sub_aba_cup", "➕ Novo cupom"),
+        "updated_at": datetime.now().isoformat(),
+    }
+    mapa_sids[sid_atual] = pacote_sessao_sid
+
+    # Limpar chaves globais legadas para nunca vazar sessão entre dispositivos diferentes
+    dados_atuais.pop("cliente_logado", None)
+    dados_atuais.pop("carrinho_cliente", None)
+    dados_atuais.pop("admin_logado", None)
+    dados_atuais.pop("auth_user", None)
+
+    dados_atuais.update({
         "sessoes_por_sid": mapa_sids,
         "contas_clientes_local": st.session_state.get("contas_clientes_local", {}),
         "chamados_suporte_local": st.session_state.get("chamados_suporte_local", []),
@@ -1273,6 +1292,23 @@ def salvar_estado_persistente():
     except Exception:
         pass
 
+    # Persistir sessão individual também no Supabase (chave sessao_<sid>) para sobreviver no Streamlit Cloud
+    try:
+        chave_sup = f"sessao_{sid_atual}"
+        res_s = supabase.table("config_loja").select("id").eq("chave", chave_sup).limit(1).execute()
+        if res_s.data:
+            supabase.table("config_loja").update({
+                "dados": pacote_sessao_sid,
+                "updated_at": datetime.now().isoformat(),
+            }).eq("chave", chave_sup).execute()
+        else:
+            supabase.table("config_loja").insert({
+                "chave": chave_sup,
+                "dados": pacote_sessao_sid,
+            }).execute()
+    except Exception:
+        pass
+
 
 def hidratar_sessao_inicial():
     if not st.session_state.get("_sessao_hidratada"):
@@ -1281,18 +1317,33 @@ def hidratar_sessao_inicial():
         mapa_sids = persistido.get("sessoes_por_sid") if isinstance(persistido.get("sessoes_por_sid"), dict) else {}
         sessao_sid = mapa_sids.get(sid_atual)
 
-        st.session_state["admin_logado"] = bool(persistido.get("admin_logado", False))
-        st.session_state["auth_user"] = persistido.get("auth_user")
-        st.session_state["menu_admin_nav"] = persistido.get("menu_admin_nav", "🏠 Início")
+        # Caso não encontre no disco local (ex: Streamlit Cloud após reboot), busca no Supabase pelo SID único
+        if not isinstance(sessao_sid, dict):
+            try:
+                r_sup_sid = supabase.table("config_loja").select("dados").eq("chave", f"sessao_{sid_atual}").limit(1).execute()
+                if r_sup_sid.data and isinstance(r_sup_sid.data[0].get("dados"), dict):
+                    sessao_sid = r_sup_sid.data[0]["dados"]
+            except Exception:
+                pass
 
         if isinstance(sessao_sid, dict):
             st.session_state["cliente_logado"] = sessao_sid.get("cliente_logado")
             st.session_state["carrinho_cliente"] = sessao_sid.get("carrinho_cliente", [])
             st.session_state["aba_loja_cliente"] = sessao_sid.get("aba_loja_cliente", "vitrine")
+            st.session_state["admin_logado"] = bool(sessao_sid.get("admin_logado", False))
+            st.session_state["auth_user"] = sessao_sid.get("auth_user")
+            st.session_state["menu_admin_nav"] = sessao_sid.get("menu_admin_nav", "🏠 Início")
+            if sessao_sid.get("sub_aba_cli"):
+                st.session_state["sub_aba_cli"] = sessao_sid.get("sub_aba_cli")
+            if sessao_sid.get("sub_aba_cup"):
+                st.session_state["sub_aba_cup"] = sessao_sid.get("sub_aba_cup")
         else:
-            st.session_state["cliente_logado"] = persistido.get("cliente_logado")
-            st.session_state["carrinho_cliente"] = persistido.get("carrinho_cliente", [])
-            st.session_state["aba_loja_cliente"] = persistido.get("aba_loja_cliente", "vitrine")
+            st.session_state["cliente_logado"] = None
+            st.session_state["carrinho_cliente"] = []
+            st.session_state["aba_loja_cliente"] = "vitrine"
+            st.session_state["admin_logado"] = False
+            st.session_state["auth_user"] = None
+            st.session_state["menu_admin_nav"] = "🏠 Início"
 
         # Criptografar senhas legadas em texto puro nas contas locais
         contas_loc = persistido.get("contas_clientes_local", {})
@@ -1703,7 +1754,9 @@ if modo_admin_ativo:
                                 st.error("Senha mestre incorreta.")
 
             if st.button("← Voltar à Loja Online", use_container_width=True):
+                sid_nav_keep = obter_sid_navegador()
                 st.query_params.clear()
+                st.query_params["sid"] = sid_nav_keep
                 st.rerun()
         st.stop()
 
@@ -1800,7 +1853,9 @@ if modo_admin_ativo:
 
             # Atalho da Loja
             if st.button("Ver Loja Online ↗", icon=":material/open_in_new:", use_container_width=True):
+                sid_nav_keep = obter_sid_navegador()
                 st.query_params.clear()
+                st.query_params["sid"] = sid_nav_keep
                 st.rerun()
 
             # Bottom User Profile Card (Igual ao rodapé do Figma na Imagem 2)
@@ -1833,7 +1888,9 @@ if modo_admin_ativo:
                 st.session_state["admin_logado"] = False
                 st.session_state["auth_user"] = None
                 salvar_estado_persistente()
+                sid_nav_keep = obter_sid_navegador()
                 st.query_params.clear()
+                st.query_params["sid"] = sid_nav_keep
                 st.rerun()
 
     with col_main:
@@ -2813,16 +2870,16 @@ if modo_admin_ativo:
                         st.rerun()
 
         # =================================================================
-        # 5. ABA CLIENTES & SUPORTE (LISTA, ADICIONAR E CHAMADOS DE SUPORTE)
+        # 5. ABA CLIENTES & SUPORTE (LISTA, ADICIONAR, SENHAS E CHAMADOS)
         # =================================================================
         elif aba_admin == "👥 Clientes":
-            opcoes_cli = ["📋 Lista de clientes", "➕ Adicionar cliente", "🎧 Chamados de Suporte"]
+            opcoes_cli = ["📋 Lista de clientes", "➕ Adicionar cliente", "🔑 Alterar Senha de Usuários", "🎧 Chamados de Suporte"]
             if "sub_aba_cli" not in st.session_state or st.session_state["sub_aba_cli"] not in opcoes_cli:
                 st.session_state["sub_aba_cli"] = "📋 Lista de clientes"
 
             st.markdown('<h1 class="admin-page-title">Clientes & Atendimento</h1>', unsafe_allow_html=True)
 
-            col_cl_b1, col_cl_b2, col_cl_b3, _ = st.columns([1.4, 1.4, 1.6, 1.6])
+            col_cl_b1, col_cl_b2, col_cl_b3, col_cl_b4 = st.columns([1.3, 1.3, 1.6, 1.4])
             with col_cl_b1:
                 st.button(
                     "📋 Lista de clientes",
@@ -2843,6 +2900,15 @@ if modo_admin_ativo:
                 )
             with col_cl_b3:
                 st.button(
+                    "🔑 Alterar Senhas",
+                    key="btn_tab_cli_pwd",
+                    type="primary" if st.session_state["sub_aba_cli"] == "🔑 Alterar Senha de Usuários" else "secondary",
+                    use_container_width=True,
+                    on_click=ir_para_sub_aba,
+                    args=("sub_aba_cli", "🔑 Alterar Senha de Usuários"),
+                )
+            with col_cl_b4:
+                st.button(
                     "🎧 Chamados de Suporte",
                     key="btn_tab_cli_sup",
                     type="primary" if st.session_state["sub_aba_cli"] == "🎧 Chamados de Suporte" else "secondary",
@@ -2857,17 +2923,20 @@ if modo_admin_ativo:
                 # Carrega clientes cadastrados diretamente na tabela clientes do Supabase
                 clientes_map = {}
                 try:
-                    res_cls = supabase.table("clientes").select("*").execute()
+                    res_cls = supabase.table("clientes").select("*").order("id", desc=True).execute()
                     for c in (res_cls.data or []):
-                        chave = c.get("cpf_cnpj") or f"id_{c.get('id')}"
+                        chave = c.get("cpf_cnpj") or c.get("email") or f"id_{c.get('id')}"
                         clientes_map[chave] = {
-                            "nome": c.get("nome"),
+                            "id": c.get("id"),
+                            "auth_uid": c.get("auth_uid"),
+                            "nome": c.get("nome") or "Cliente",
                             "cpf": c.get("cpf_cnpj") or "Não informado",
                             "whatsapp": c.get("whatsapp") or "Não informado",
                             "email": c.get("email") or "Não informado",
                             "endereco": c.get("endereco_completo") or "Não informado",
                             "cep": c.get("cep") or "Não informado",
                             "tabela": c.get("tabela_preco", "Varejo"),
+                            "tem_senha": bool(c.get("senha")),
                             "total_pedidos": 0,
                         }
                 except Exception:
@@ -2884,6 +2953,7 @@ if modo_admin_ativo:
                     cpf = ped.get("cliente_cpf")
                     if cpf and cpf not in clientes_map:
                         clientes_map[cpf] = {
+                            "id": ped.get("cliente_id"),
                             "nome": ped.get("cliente_nome", "Cliente Sem Nome"),
                             "cpf": cpf,
                             "whatsapp": ped.get("cliente_whatsapp", ""),
@@ -2891,6 +2961,7 @@ if modo_admin_ativo:
                             "endereco": ped.get("endereco_completo", "Não informado"),
                             "cep": ped.get("cep", ""),
                             "tabela": "Varejo",
+                            "tem_senha": False,
                             "total_pedidos": 1,
                         }
                     elif cpf in clientes_map:
@@ -2949,17 +3020,21 @@ if modo_admin_ativo:
                         unsafe_allow_html=True,
                     )
                 else:
-                    busca_cli = st.text_input("🔍 Buscar cliente por Nome ou CPF:", placeholder="Digite o nome ou CPF...")
+                    busca_cli = st.text_input("🔍 Buscar cliente por Nome, E-mail ou CPF:", placeholder="Digite o nome, e-mail ou CPF...")
                     st.caption(f"Total de {len(clientes_map)} cliente(s) cadastrado(s)")
 
-                    for _, cli in clientes_map.items():
+                    for idx_c_list, (chave_c, cli) in enumerate(clientes_map.items()):
                         if busca_cli:
                             termo = busca_cli.lower()
-                            if termo not in cli["nome"].lower() and termo not in cli.get("cpf", "").lower():
+                            if (
+                                termo not in str(cli.get("nome", "")).lower()
+                                and termo not in str(cli.get("cpf", "")).lower()
+                                and termo not in str(cli.get("email", "")).lower()
+                            ):
                                 continue
 
                         with st.container(border=True):
-                            c_c1, c_c2, c_c3 = st.columns([3, 3, 2])
+                            c_c1, c_c2, c_c3 = st.columns([2.8, 2.7, 2.3])
                             with c_c1:
                                 st.markdown(f"**👤 {cli['nome']}**")
                                 st.write(f"CPF: `{cli.get('cpf', '-')}` | E-mail: `{cli.get('email', 'Não informado')}`")
@@ -2970,7 +3045,74 @@ if modo_admin_ativo:
                                 num_w = re.sub(r"\D", "", str(cli.get("whatsapp", "")))
                                 if num_w:
                                     st.markdown(f"[💬 Falar no WhatsApp](https://wa.me/55{num_w})")
-                                st.caption(f"🛒 Compras: {cli.get('total_pedidos', 1)} pedido(s)")
+                                st.caption(f"🛒 Compras: {cli.get('total_pedidos', 0)} pedido(s)")
+
+                                with st.popover("🔑 Alterar Senha", use_container_width=True):
+                                    st.markdown(f"**🔑 Redefinir Senha de {cli['nome']}**")
+                                    nova_s_pop = st.text_input(
+                                        "Nova senha (mín. 6 caracteres)",
+                                        type="password",
+                                        key=f"pop_pw1_{idx_c_list}",
+                                        placeholder="Digite a nova senha",
+                                    )
+                                    conf_s_pop = st.text_input(
+                                        "Confirmar nova senha",
+                                        type="password",
+                                        key=f"pop_pw2_{idx_c_list}",
+                                        placeholder="Repita a nova senha",
+                                    )
+                                    if st.button("💾 Salvar Nova Senha", key=f"btn_pop_pw_{idx_c_list}", type="primary", use_container_width=True):
+                                        if not nova_s_pop or len(nova_s_pop.strip()) < 4:
+                                            st.error("Informe uma senha válida (mínimo 4 caracteres).")
+                                        elif nova_s_pop != conf_s_pop:
+                                            st.error("As senhas não conferem.")
+                                        else:
+                                            hash_novo = gerar_hash_senha(nova_s_pop.strip())
+                                            atualizou_db = False
+                                            try:
+                                                if cli.get("id"):
+                                                    supabase.table("clientes").update({"senha": hash_novo}).eq("id", cli["id"]).execute()
+                                                    atualizou_db = True
+                                                elif cli.get("cpf") and cli.get("cpf") != "Não informado":
+                                                    r_up = supabase.table("clientes").update({"senha": hash_novo}).eq("cpf_cnpj", cli["cpf"]).execute()
+                                                    if r_up.data:
+                                                        atualizou_db = True
+                                                if not atualizou_db and cli.get("email") and "@" in str(cli.get("email")):
+                                                    r_up2 = supabase.table("clientes").update({"senha": hash_novo}).ilike("email", cli["email"].strip()).execute()
+                                                    if r_up2.data:
+                                                        atualizou_db = True
+                                                if not atualizou_db:
+                                                    supabase.table("clientes").insert({
+                                                        "nome": cli["nome"],
+                                                        "cpf_cnpj": cli.get("cpf") if cli.get("cpf") != "Não informado" else None,
+                                                        "email": cli.get("email") if cli.get("email") != "Não informado" else None,
+                                                        "whatsapp": cli.get("whatsapp") if cli.get("whatsapp") != "Não informado" else None,
+                                                        "endereco_completo": cli.get("endereco"),
+                                                        "cep": cli.get("cep"),
+                                                        "senha": hash_novo,
+                                                    }).execute()
+                                            except Exception:
+                                                pass
+
+                                            # Atualizar também no Supabase Auth caso SERVICE_ROLE_KEY esteja configurada
+                                            srv_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY") or st.secrets.get("SUPABASE_SERVICE_ROLE")
+                                            if srv_key and cli.get("auth_uid"):
+                                                try:
+                                                    sup_adm = create_client(st.secrets["SUPABASE_URL"], srv_key)
+                                                    sup_adm.auth.admin.update_user_by_id(cli["auth_uid"], {"password": nova_s_pop.strip()})
+                                                except Exception:
+                                                    pass
+
+                                            # Atualizar cache local de contas
+                                            contas_loc = st.session_state.setdefault("contas_clientes_local", {})
+                                            em_k = (cli.get("email") or "").strip().lower()
+                                            cpf_k = re.sub(r"\D", "", str(cli.get("cpf") or ""))
+                                            if em_k and em_k in contas_loc:
+                                                contas_loc[em_k]["senha"] = hash_novo
+                                            if cpf_k and cpf_k in contas_loc:
+                                                contas_loc[cpf_k]["senha"] = hash_novo
+                                            salvar_estado_persistente()
+                                            st.success(f"✅ Senha de **{cli['nome']}** alterada com sucesso!")
 
             elif sub_aba_cli == "➕ Adicionar cliente":
                 # Formulário idêntico ao print do usuário (Nuvemshop: "Adicionar cliente")
@@ -2988,6 +3130,12 @@ if modo_admin_ativo:
                             tel_cli_in = st.text_input("Telefone (opcional)", placeholder="Ex: 92981234567")
                         with col_dp2:
                             cpf_cli_in = st.text_input("CPF ou CNPJ (opcional)", placeholder="Ex: 000.000.000-00")
+
+                        senha_cli_in = st.text_input(
+                            "🔑 Senha de acesso do cliente na loja (opcional)",
+                            type="password",
+                            placeholder="Defina uma senha para o cliente logar na loja (mínimo 6 caracteres)",
+                        )
 
                     # CARD 2: DADOS DE ENTREGA
                     with st.container(border=True):
@@ -3020,16 +3168,20 @@ if modo_admin_ativo:
                     if not nome_cli_in:
                         st.error("Informe o Nome e sobrenome do cliente.")
                     else:
+                        hash_s_add = gerar_hash_senha(senha_cli_in.strip()) if senha_cli_in and senha_cli_in.strip() else None
                         try:
-                            supabase.table("clientes").insert({
+                            payload_new_cli = {
                                 "nome": nome_cli_in,
                                 "cpf_cnpj": cpf_cli_in or None,
                                 "whatsapp": tel_cli_in or None,
-                                "email": email_cli_in or None,
+                                "email": email_cli_in.strip().lower() if email_cli_in else None,
                                 "endereco_completo": end_cli_in or None,
                                 "cep": cep_cli_in or None,
                                 "tabela_preco": tabela_cli_in,
-                            }).execute()
+                            }
+                            if hash_s_add:
+                                payload_new_cli["senha"] = hash_s_add
+                            supabase.table("clientes").insert(payload_new_cli).execute()
                         except Exception:
                             pass
                         st.session_state["clientes_extras"].append({
@@ -3045,6 +3197,145 @@ if modo_admin_ativo:
                         st.success(f"🎉 Cliente **{nome_cli_in}** adicionado com sucesso!")
                         st.session_state["sub_aba_cli"] = "📋 Lista de clientes"
                         st.rerun()
+
+            elif sub_aba_cli == "🔑 Alterar Senha de Usuários":
+                st.markdown("### 🔑 Central de Controle de Senhas (Clientes & Administrador)")
+                st.caption("Altere imediatamente a senha de acesso de qualquer cliente cadastrado ou gerencie sua própria senha de administrador.")
+
+                col_pw_cli, col_pw_adm = st.columns([1.45, 1.15])
+
+                with col_pw_cli:
+                    with st.container(border=True):
+                        st.markdown('<div class="nuvem-card-title">👤 Redefinir Senha de Cliente da Loja</div>', unsafe_allow_html=True)
+                        st.caption("Selecione um cliente da lista ou digite o E-mail / CPF para definir uma nova senha na hora:")
+
+                        lista_clientes_db = []
+                        try:
+                            r_cl_pw = supabase.table("clientes").select("*").order("nome").execute()
+                            lista_clientes_db = r_cl_pw.data or []
+                        except Exception:
+                            lista_clientes_db = []
+
+                        opcoes_sel_cli = ["-- Digitar E-mail ou CPF manualmente --"]
+                        mapa_sel_cli = {}
+                        for c_item_pw in lista_clientes_db:
+                            rotulo_c = f"{c_item_pw.get('nome', 'Cliente')} | E-mail: {c_item_pw.get('email') or '-'} | CPF: {c_item_pw.get('cpf_cnpj') or '-'}"
+                            opcoes_sel_cli.append(rotulo_c)
+                            mapa_sel_cli[rotulo_c] = c_item_pw
+
+                        escolha_cli_pw = st.selectbox("Selecionar cliente cadastrado:", opcoes_sel_cli, key="sel_cli_reset_pw")
+                        cli_selecionado_obj = mapa_sel_cli.get(escolha_cli_pw)
+
+                        with st.form("form_admin_reset_senha_cliente"):
+                            ident_manual_pw = st.text_input(
+                                "Ou informe o E-mail / CPF do cliente (caso não esteja na lista acima):",
+                                value=(cli_selecionado_obj.get("email") or cli_selecionado_obj.get("cpf_cnpj") or "") if cli_selecionado_obj else "",
+                                placeholder="cliente@email.com ou 000.000.000-00",
+                            )
+                            c_np1, c_np2 = st.columns(2)
+                            nova_senha_u = c_np1.text_input("Nova Senha do Usuário *", type="password", placeholder="Mínimo 6 caracteres")
+                            conf_senha_u = c_np2.text_input("Confirmar Nova Senha *", type="password", placeholder="Repita a senha")
+
+                            btn_salvar_pw_u = st.form_submit_button("💾 Alterar Senha do Cliente Agora", type="primary", use_container_width=True)
+
+                            if btn_salvar_pw_u:
+                                ident_alvo = ident_manual_pw.strip()
+                                if not cli_selecionado_obj and not ident_alvo:
+                                    st.error("Selecione um cliente na lista ou digite o E-mail / CPF.")
+                                elif not nova_senha_u or len(nova_senha_u.strip()) < 4:
+                                    st.error("A nova senha deve ter pelo menos 4 caracteres (recomendado 6+).")
+                                elif nova_senha_u != conf_senha_u:
+                                    st.error("As senhas digitadas não conferem.")
+                                else:
+                                    hash_pw_novo = gerar_hash_senha(nova_senha_u.strip())
+                                    sucesso_up = False
+                                    nome_exib = cli_selecionado_obj.get("nome") if cli_selecionado_obj else ident_alvo
+                                    auth_uid_alvo = cli_selecionado_obj.get("auth_uid") if cli_selecionado_obj else None
+
+                                    try:
+                                        if cli_selecionado_obj and cli_selecionado_obj.get("id"):
+                                            supabase.table("clientes").update({"senha": hash_pw_novo}).eq("id", cli_selecionado_obj["id"]).execute()
+                                            sucesso_up = True
+                                        elif "@" in ident_alvo:
+                                            r_u_em = supabase.table("clientes").update({"senha": hash_pw_novo}).ilike("email", ident_alvo.lower()).execute()
+                                            if r_u_em.data:
+                                                sucesso_up = True
+                                                nome_exib = r_u_em.data[0].get("nome", ident_alvo)
+                                                auth_uid_alvo = r_u_em.data[0].get("auth_uid")
+                                        if not sucesso_up and ident_alvo:
+                                            r_u_cpf = supabase.table("clientes").update({"senha": hash_pw_novo}).eq("cpf_cnpj", ident_alvo).execute()
+                                            if r_u_cpf.data:
+                                                sucesso_up = True
+                                                nome_exib = r_u_cpf.data[0].get("nome", ident_alvo)
+                                                auth_uid_alvo = r_u_cpf.data[0].get("auth_uid")
+                                        if not sucesso_up and ident_alvo:
+                                            # Criar registro se ainda não existia na tabela clientes
+                                            eh_email = "@" in ident_alvo
+                                            supabase.table("clientes").insert({
+                                                "nome": ident_alvo.split("@")[0].title() if eh_email else f"Cliente {ident_alvo}",
+                                                "email": ident_alvo.lower() if eh_email else None,
+                                                "cpf_cnpj": None if eh_email else ident_alvo,
+                                                "senha": hash_pw_novo,
+                                                "tabela_preco": "Varejo",
+                                            }).execute()
+                                            sucesso_up = True
+                                    except Exception as e_db_pw:
+                                        st.warning(f"Aviso ao atualizar tabela: {e_db_pw}")
+
+                                    # Também sincroniza com Supabase Auth Admin se houver chave service_role
+                                    srv_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY") or st.secrets.get("SUPABASE_SERVICE_ROLE")
+                                    if srv_key and auth_uid_alvo:
+                                        try:
+                                            sup_adm = create_client(st.secrets["SUPABASE_URL"], srv_key)
+                                            sup_adm.auth.admin.update_user_by_id(auth_uid_alvo, {"password": nova_senha_u.strip()})
+                                        except Exception:
+                                            pass
+
+                                    # Atualiza cache local persistente
+                                    contas_loc = st.session_state.setdefault("contas_clientes_local", {})
+                                    if ident_alvo:
+                                        k_l = ident_alvo.lower()
+                                        if k_l in contas_loc:
+                                            contas_loc[k_l]["senha"] = hash_pw_novo
+                                        k_num = re.sub(r"\D", "", ident_alvo)
+                                        if k_num and k_num in contas_loc:
+                                            contas_loc[k_num]["senha"] = hash_pw_novo
+                                    salvar_estado_persistente()
+                                    st.success(f"✅ Senha de **{nome_exib}** redefinida com sucesso! O cliente já pode entrar usando a nova senha.")
+
+                with col_pw_adm:
+                    with st.container(border=True):
+                        st.markdown('<div class="nuvem-card-title">🛡️ Alterar Minha Senha de Administrador</div>', unsafe_allow_html=True)
+                        st.caption("Atualize a senha da sua conta de Administrador no Supabase Auth:")
+                        with st.form("form_admin_mudar_propria_senha"):
+                            nova_s_adm = st.text_input("Nova Senha do Admin (mín. 6 dígitos) *", type="password")
+                            conf_s_adm = st.text_input("Confirmar Nova Senha *", type="password")
+                            btn_up_adm_pw = st.form_submit_button("🔐 Atualizar Senha do Admin", use_container_width=True)
+                            if btn_up_adm_pw:
+                                if not nova_s_adm or len(nova_s_adm) < 6:
+                                    st.error("A senha do Supabase Auth deve ter no mínimo 6 caracteres.")
+                                elif nova_s_adm != conf_s_adm:
+                                    st.error("As senhas não conferem.")
+                                else:
+                                    try:
+                                        supabase.auth.update_user({"password": nova_s_adm})
+                                        st.success("✅ Senha de Administrador atualizada no Supabase Auth!")
+                                    except Exception as e_adm_pw:
+                                        st.error(f"Para alterar a senha do Admin no Supabase Auth, entre usando a aba 'Entrar com Supabase'. Detalhe: {e_adm_pw}")
+
+                    with st.container(border=True):
+                        st.markdown('<div class="nuvem-card-title">📧 Enviar E-mail de Recuperação</div>', unsafe_allow_html=True)
+                        st.caption("Prefere que o próprio usuário escolha a senha por e-mail?")
+                        email_envio_rec = st.text_input("E-mail do usuário:", placeholder="usuario@email.com", key="adm_inp_email_rec")
+                        if st.button("📨 Disparar Link de Redefinição (Supabase)", use_container_width=True):
+                            if not email_envio_rec or "@" not in email_envio_rec:
+                                st.warning("Digite um e-mail válido.")
+                            else:
+                                try:
+                                    supabase.auth.reset_password_for_email(email_envio_rec.strip().lower())
+                                    st.success(f"✅ Link enviado para **{email_envio_rec}**!")
+                                except Exception as e_rec_adm:
+                                    st.error(f"Erro ao enviar e-mail: {e_rec_adm}")
 
             elif sub_aba_cli == "🎧 Chamados de Suporte":
                 st.markdown("### 🎧 Central de Atendimento & Chamados de Clientes")
@@ -3821,6 +4112,12 @@ def autenticar_cliente_loja(identificador: str, senha_digitada: str):
     autenticado_supabase_auth = False
     auth_user_obj = None
 
+    # 2.5 Priorizar validação da senha da tabela public.clientes (permite que o Admin altere a senha do cliente imediatamente)
+    autenticado_pelo_banco = False
+    if conta_achada and conta_achada.get("senha"):
+        if verificar_senha_cliente(senha_digitada, conta_achada.get("senha")):
+            autenticado_pelo_banco = True
+
     # 3. Tentar autenticação oficial no Supabase Auth (auth.users)
     if email_auth and "@" in email_auth:
         try:
@@ -3834,27 +4131,29 @@ def autenticar_cliente_loja(identificador: str, senha_digitada: str):
         except Exception as e_sup_login:
             msg_err_sup = str(e_sup_login).lower()
             # Se o cliente já estava em public.clientes e a senha confere, sincroniza/cria no Supabase Auth
-            if conta_achada:
-                senha_banco = conta_achada.get("senha")
-                if (senha_banco and verificar_senha_cliente(senha_digitada, senha_banco)) or not senha_banco:
-                    if len(senha_digitada) >= 6 and "email not confirmed" not in msg_err_sup:
-                        try:
-                            res_mig = supabase.auth.sign_up({
-                                "email": email_auth,
-                                "password": senha_digitada,
-                                "options": {
-                                    "data": {
-                                        "nome": conta_achada.get("nome", "Cliente"),
-                                        "cpf_cnpj": conta_achada.get("cpf_cnpj", ""),
-                                        "role": "cliente",
-                                    }
-                                },
-                            })
-                            if res_mig and res_mig.user:
-                                autenticado_supabase_auth = True
-                                auth_user_obj = res_mig.user
-                        except Exception:
-                            pass
+            if conta_achada and autenticado_pelo_banco:
+                if len(senha_digitada) >= 6 and "email not confirmed" not in msg_err_sup:
+                    try:
+                        res_mig = supabase.auth.sign_up({
+                            "email": email_auth,
+                            "password": senha_digitada,
+                            "options": {
+                                "data": {
+                                    "nome": conta_achada.get("nome", "Cliente"),
+                                    "cpf_cnpj": conta_achada.get("cpf_cnpj", ""),
+                                    "role": "cliente",
+                                }
+                            },
+                        })
+                        if res_mig and res_mig.user:
+                            autenticado_supabase_auth = True
+                            auth_user_obj = res_mig.user
+                    except Exception:
+                        pass
+
+    # Se a senha conferiu pela tabela public.clientes (ex: redefinida pelo Admin), considera autenticado
+    if autenticado_pelo_banco:
+        autenticado_supabase_auth = True
 
     # Se autenticou via Supabase Auth mas ainda não tinha linha em public.clientes, cria agora
     if autenticado_supabase_auth and not conta_achada and auth_user_obj:
