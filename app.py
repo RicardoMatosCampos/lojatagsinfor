@@ -637,13 +637,18 @@ st.markdown(
 )
 
 # =====================================================================
-# SUPABASE & FUNÇÕES NATIVAS
+# SUPABASE & FUNÇÕES NATIVAS (ISOLADO POR SESSÃO DE USUÁRIO)
 # =====================================================================
-@st.cache_resource
 def init_supabase():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+    """
+    Cria ou recupera uma instância do cliente Supabase EXCLUSIVA para a sessão do navegador atual
+    (evitando que @st.cache_resource compartilhe tokens de autenticação entre usuários diferentes).
+    """
+    if "_supabase_client_sessao" not in st.session_state:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        st.session_state["_supabase_client_sessao"] = create_client(url, key)
+    return st.session_state["_supabase_client_sessao"]
 
 
 supabase = init_supabase()
@@ -1189,24 +1194,48 @@ def obter_trilha_produto(prod: dict, deps_map: dict, cats_map: dict, subs_map: d
 ARQUIVO_SESSOES = ".sessoes_persistentes.json"
 
 
+def obter_assinatura_dispositivo() -> str:
+    """
+    Gera uma assinatura curta exclusiva do navegador/aparelho atual (User-Agent).
+    Assim, mesmo que alguém copie e envie o link com `?sid=...` do PC para um Celular,
+    o Celular terá uma assinatura diferente e jamais entrará logado na conta do PC!
+    """
+    try:
+        headers = st.context.headers or {}
+        ua = str(headers.get("User-Agent") or headers.get("user-agent") or "unknown")
+        sec_ch = str(headers.get("Sec-Ch-Ua-Platform") or headers.get("sec-ch-ua-platform") or "")
+        sec_mob = str(headers.get("Sec-Ch-Ua-Mobile") or headers.get("sec-ch-ua-mobile") or "")
+        raw_fp = f"{ua}|{sec_ch}|{sec_mob}"
+        return hashlib.sha256(raw_fp.encode("utf-8")).hexdigest()[:8]
+    except Exception:
+        return "dev00000"
+
+
 def obter_sid_navegador() -> str:
     """
-    Garante um identificador de sessão individual e exclusivo por navegador (`?sid=s_...`).
-    Fixa o `sid` imediatamente na URL para sobreviver a qualquer atualização de página (F5),
-    sem jamais compartilhar o login com outros dispositivos/navegadores.
+    Garante um identificador de sessão individual e exclusivo por navegador + aparelho (`?sid=s_<fp>_<random>`).
+    - Se você atualizar a página (F5) no mesmo aparelho, mantém o mesmo `sid` e continua logado na mesma tela.
+    - Se você abrir o mesmo link em outro aparelho (ex: celular vs PC), a assinatura `_<fp>_` não bate e gera
+      automaticamente um `sid` novo e deslogado!
     """
+    fp_atual = obter_assinatura_dispositivo()
+    prefixo_esperado = f"s_{fp_atual}_"
+
     sid_url = st.query_params.get("sid")
     if isinstance(sid_url, list):
         sid_url = sid_url[0] if sid_url else None
-    if sid_url and isinstance(sid_url, str) and len(sid_url.strip()) >= 6 and sid_url.strip() != "padrao_local":
+
+    # Só aceita o SID da URL se pertencer exatamente ao mesmo tipo de aparelho/navegador (prefixo_esperado)
+    if sid_url and isinstance(sid_url, str) and sid_url.strip().startswith(prefixo_esperado):
         sid_limpo = sid_url.strip()
         st.session_state["_sid_navegador"] = sid_limpo
         return sid_limpo
 
-    if "_sid_navegador" in st.session_state and st.session_state["_sid_navegador"] and st.session_state["_sid_navegador"] != "padrao_local":
-        sid_limpo = st.session_state["_sid_navegador"]
+    sid_mem = st.session_state.get("_sid_navegador")
+    if sid_mem and isinstance(sid_mem, str) and sid_mem.startswith(prefixo_esperado):
+        sid_limpo = sid_mem
     else:
-        sid_limpo = f"s_{uuid.uuid4().hex[:12]}"
+        sid_limpo = f"{prefixo_esperado}{uuid.uuid4().hex[:10]}"
         st.session_state["_sid_navegador"] = sid_limpo
 
     try:
