@@ -97,11 +97,13 @@ st.markdown(
        fiquem 100% claros e legíveis mesmo sem config.toml no servidor.
        ================================================================= */
 
-    /* 1. Botões Primários e Submit de Formulários (Azul Oficial #2563EB) */
+    /* 1. Botões Primários, Links Primários e Submit de Formulários (Azul Oficial #2563EB) */
     button[kind="primary"],
     button[kind="primaryFormSubmit"],
+    a[kind="primary"],
     [data-testid="stBaseButton-primary"],
     [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stBaseLinkButton-primary"],
     [data-testid="stFormSubmitButton"] button {
         background: linear-gradient(90deg, #2563EB 0%, #1D4ED8 100%) !important;
         background-color: #2563EB !important;
@@ -117,18 +119,24 @@ st.markdown(
     button[kind="primaryFormSubmit"] p,
     button[kind="primaryFormSubmit"] span,
     button[kind="primaryFormSubmit"] div,
+    a[kind="primary"] p,
+    a[kind="primary"] span,
     [data-testid="stBaseButton-primary"] p,
     [data-testid="stBaseButton-primary"] span,
     [data-testid="stBaseButton-primaryFormSubmit"] p,
     [data-testid="stBaseButton-primaryFormSubmit"] span,
+    [data-testid="stBaseLinkButton-primary"] p,
+    [data-testid="stBaseLinkButton-primary"] span,
     [data-testid="stFormSubmitButton"] button p,
     [data-testid="stFormSubmitButton"] button span {
         color: #FFFFFF !important;
     }
     button[kind="primary"]:hover,
     button[kind="primaryFormSubmit"]:hover,
+    a[kind="primary"]:hover,
     [data-testid="stBaseButton-primary"]:hover,
     [data-testid="stBaseButton-primaryFormSubmit"]:hover,
+    [data-testid="stBaseLinkButton-primary"]:hover,
     [data-testid="stFormSubmitButton"] button:hover {
         background: linear-gradient(90deg, #1D4ED8 0%, #1E40AF 100%) !important;
         background-color: #1D4ED8 !important;
@@ -139,8 +147,10 @@ st.markdown(
     /* 2. Botões Secundários (Topo da Loja, + Carrinho, Ver Detalhes, Paginação, Rodapé) */
     button[kind="secondary"],
     button[kind="secondaryFormSubmit"],
+    a[kind="secondary"],
     [data-testid="stBaseButton-secondary"],
-    [data-testid="stBaseButton-secondaryFormSubmit"] {
+    [data-testid="stBaseButton-secondaryFormSubmit"],
+    [data-testid="stBaseLinkButton-secondary"] {
         background: #FFFFFF !important;
         background-color: #FFFFFF !important;
         color: #0F172A !important;
@@ -155,10 +165,14 @@ st.markdown(
     button[kind="secondaryFormSubmit"] p,
     button[kind="secondaryFormSubmit"] span,
     button[kind="secondaryFormSubmit"] div,
+    a[kind="secondary"] p,
+    a[kind="secondary"] span,
     [data-testid="stBaseButton-secondary"] p,
     [data-testid="stBaseButton-secondary"] span,
     [data-testid="stBaseButton-secondaryFormSubmit"] p,
-    [data-testid="stBaseButton-secondaryFormSubmit"] span {
+    [data-testid="stBaseButton-secondaryFormSubmit"] span,
+    [data-testid="stBaseLinkButton-secondary"] p,
+    [data-testid="stBaseLinkButton-secondary"] span {
         color: #0F172A !important;
     }
     button[kind="secondary"]:hover,
@@ -390,30 +404,136 @@ st.markdown(
         stroke: #FFFFFF !important;
     }
     [data-testid="stCheckbox"] p,
-    [data-testid="stCheckbox"] span {
+    [data-testid="stCheckbox"] span,
+    [data-testid="stRadio"] p,
+    [data-testid="stRadio"] span,
+    [data-testid="stRadio"] label,
+    [data-testid="stText"],
+    [data-testid="stText"] span,
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricValue"] div,
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricLabel"] p {
         color: #0F172A !important;
     }
 
-    /* 7. Rótulos (Labels), Abas (st.tabs), Expanders (st.expander), Upload e Modais (st.dialog) */
+    /* 7. Rótulos (Labels), Abas (st.tabs), Alertas (st.success/info/warning/error), Expanders, Upload e Modais (st.dialog) */
     [data-testid="stWidgetLabel"] p,
     [data-testid="stWidgetLabel"] span,
+    [data-testid="stCaptionContainer"],
     [data-testid="stCaptionContainer"] p {
-        color: #334155 !important;
+        color: #475569 !important;
     }
-    [data-testid="stTabs"] button[role="tab"] {
+
+    /* Abas (st.tabs — tanto React Aria stTab quanto BaseWeb role="tab") */
+    [data-testid="stTabs"] [role="tablist"]::after {
+        background-color: #E2E8F0 !important;
+    }
+    [data-testid="stTab"],
+    [data-testid="stTab"] p,
+    [data-testid="stTab"] span,
+    [data-testid="stTabs"] button[role="tab"],
+    [data-testid="stTabs"] button[role="tab"] p,
+    [data-testid="stTabs"] button[role="tab"] span {
         color: #475569 !important;
         font-weight: 600 !important;
+        background: transparent !important;
     }
-    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    [data-testid="stTab"]:hover,
+    [data-testid="stTab"]:hover p,
+    [data-testid="stTab"]:hover span,
+    [data-testid="stTabs"] button[role="tab"]:hover,
+    [data-testid="stTabs"] button[role="tab"]:hover p {
+        color: #1D4ED8 !important;
+    }
+    [data-testid="stTab"][aria-selected="true"],
+    [data-testid="stTab"][data-selected],
+    [data-testid="stTab"][aria-selected="true"] p,
+    [data-testid="stTab"][aria-selected="true"] span,
+    [data-testid="stTab"][data-selected] p,
+    [data-testid="stTab"][data-selected] span,
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"],
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] p,
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] span {
         color: #2563EB !important;
         font-weight: 700 !important;
     }
+    [data-testid="stTab"] .react-aria-SelectionIndicator,
     [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
         background-color: #2563EB !important;
     }
+
+    /* Caixas de Alerta (st.success, st.info, st.warning, st.error) em Tema Claro Suave */
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {
+        background: #ECFDF5 !important;
+        background-color: #ECFDF5 !important;
+        color: #065F46 !important;
+        border: 1px solid #A7F3D0 !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stAlertContentSuccess"],
+    [data-testid="stAlertContentSuccess"] p,
+    [data-testid="stAlertContentSuccess"] span,
+    [data-testid="stAlertContentSuccess"] li,
+    [data-testid="stAlertContentSuccess"] strong,
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) svg {
+        color: #065F46 !important;
+        fill: #059669 !important;
+    }
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {
+        background: #EFF6FF !important;
+        background-color: #EFF6FF !important;
+        color: #1E40AF !important;
+        border: 1px solid #BFDBFE !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stAlertContentInfo"],
+    [data-testid="stAlertContentInfo"] p,
+    [data-testid="stAlertContentInfo"] span,
+    [data-testid="stAlertContentInfo"] li,
+    [data-testid="stAlertContentInfo"] strong,
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) svg {
+        color: #1E40AF !important;
+        fill: #2563EB !important;
+    }
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {
+        background: #FFFBEB !important;
+        background-color: #FFFBEB !important;
+        color: #92400E !important;
+        border: 1px solid #FDE68A !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stAlertContentWarning"],
+    [data-testid="stAlertContentWarning"] p,
+    [data-testid="stAlertContentWarning"] span,
+    [data-testid="stAlertContentWarning"] li,
+    [data-testid="stAlertContentWarning"] strong,
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) svg {
+        color: #92400E !important;
+        fill: #D97706 !important;
+    }
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {
+        background: #FEF2F2 !important;
+        background-color: #FEF2F2 !important;
+        color: #991B1B !important;
+        border: 1px solid #FECACA !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stAlertContentError"],
+    [data-testid="stAlertContentError"] p,
+    [data-testid="stAlertContentError"] span,
+    [data-testid="stAlertContentError"] li,
+    [data-testid="stAlertContentError"] strong,
+    [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) svg {
+        color: #991B1B !important;
+        fill: #DC2626 !important;
+    }
+
+    /* Expanders (st.expander) */
     [data-testid="stExpander"],
     [data-testid="stExpander"] details,
     [data-testid="stExpanderDetails"] {
+        background: #FFFFFF !important;
         background-color: #FFFFFF !important;
         color: #0F172A !important;
         border-color: #CBD5E1 !important;
@@ -426,7 +546,10 @@ st.markdown(
         color: #0F172A !important;
         fill: #0F172A !important;
     }
+
+    /* Upload de Arquivos (st.file_uploader) */
     [data-testid="stFileUploaderDropzone"] {
+        background: #F8FAFC !important;
         background-color: #F8FAFC !important;
         border: 1.5px dashed #93C5FD !important;
         color: #0F172A !important;
@@ -436,10 +559,46 @@ st.markdown(
     [data-testid="stFileUploaderDropzone"] p {
         color: #334155 !important;
     }
+
+    /* Janelas Modais (@st.dialog — Detalhes do Produto, Políticas LGPD, Trocas e Frete) */
+    [data-testid="stDialog"] > div,
     [data-testid="stDialog"] [role="dialog"],
-    [data-testid="stDialog"] > div > div {
+    [data-testid="stDialog"] [role="dialog"] > div {
+        background: #FFFFFF !important;
         background-color: #FFFFFF !important;
         color: #0F172A !important;
+    }
+    [data-testid="stDialog"] [slot="title"],
+    [data-testid="stDialog"] h1,
+    [data-testid="stDialog"] h2,
+    [data-testid="stDialog"] h3,
+    [data-testid="stDialog"] h4,
+    [data-testid="stDialog"] h5,
+    [data-testid="stDialog"] h6,
+    [data-testid="stDialog"] [data-testid="stMarkdownContainer"],
+    [data-testid="stDialog"] [data-testid="stMarkdownContainer"] p,
+    [data-testid="stDialog"] [data-testid="stMarkdownContainer"] li,
+    [data-testid="stDialog"] [data-testid="stMarkdownContainer"] ol,
+    [data-testid="stDialog"] [data-testid="stMarkdownContainer"] ul,
+    [data-testid="stDialog"] [data-testid="stMarkdownContainer"] strong {
+        color: #0F172A !important;
+    }
+    [data-testid="stDialog"] button[aria-label="Close"] {
+        color: #0F172A !important;
+        background: #F1F5F9 !important;
+        border-radius: 8px !important;
+    }
+    [data-testid="stDialog"] button[aria-label="Close"] svg,
+    [data-testid="stDialog"] button[aria-label="Close"] path {
+        stroke: #0F172A !important;
+        color: #0F172A !important;
+    }
+    [data-testid="stDialog"] button[aria-label="Close"]:hover {
+        background: #E2E8F0 !important;
+        color: #0F172A !important;
+    }
+    hr {
+        border-color: #E2E8F0 !important;
     }
 
     /* Top Promocional Loja */
