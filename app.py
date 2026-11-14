@@ -79,6 +79,19 @@ st.markdown(
         max-width: 100vw !important;
         background-color: #F1F5F9 !important;
         color: #0F172A !important;
+        color-scheme: light !important;
+    }
+
+    /* =====================================================================
+       BLINDAGEM DE TEMA CLARO (GARANTE QUE FIQUE IDÊNTICO NO LOCALHOST E NO STREAMLIT CLOUD)
+       Mesmo se o navegador do cliente estiver em Modo Escuro (Dark Mode) ou sem config.toml
+       ===================================================================== */
+    :root, html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        --primary-color: #2563EB !important;
+        --background-color: #F8FAFC !important;
+        --secondary-background-color: #FFFFFF !important;
+        --text-color: #0F172A !important;
+        color-scheme: light !important;
     }
 
     /* Cartões e Containers Claros, Suaves e Profissionais (Nada muito escuro) */
@@ -87,6 +100,134 @@ st.markdown(
         border: 1px solid #CBD5E1 !important;
         border-radius: 14px !important;
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04) !important;
+    }
+
+    /* Inputs de Texto, Busca, Número, Textarea e Selectbox sempre Claros */
+    [data-baseweb="input"],
+    [data-baseweb="input"] > div,
+    [data-baseweb="base-input"],
+    [data-baseweb="textarea"],
+    [data-baseweb="select"] > div {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border-color: #CBD5E1 !important;
+        border-radius: 10px !important;
+    }
+    input, textarea, [data-baseweb="input"] input, [data-baseweb="textarea"] textarea, [data-baseweb="select"] span, [data-baseweb="select"] div {
+        color: #0F172A !important;
+        -webkit-text-fill-color: #0F172A !important;
+        caret-color: #2563EB !important;
+    }
+    input::placeholder, textarea::placeholder {
+        color: #64748B !important;
+        -webkit-text-fill-color: #64748B !important;
+        opacity: 1 !important;
+    }
+    /* Menu suspenso do Selectbox / Dropdown */
+    [data-baseweb="popover"] div, [data-baseweb="menu"], [data-baseweb="menu"] li, [role="listbox"], [role="option"] {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+    }
+    [role="option"]:hover, [data-baseweb="menu"] li:hover {
+        background-color: #EFF6FF !important;
+        color: #1D4ED8 !important;
+    }
+
+    /* Botões Secundários (Inativos da barra de navegação, categorias, etc.) sempre Brancos com Texto Escuro */
+    button[kind="secondary"],
+    button[data-testid="stBaseButton-secondary"] {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
+    }
+    button[kind="secondary"] p,
+    button[kind="secondary"] span,
+    button[data-testid="stBaseButton-secondary"] p,
+    button[data-testid="stBaseButton-secondary"] span {
+        color: #0F172A !important;
+    }
+    button[kind="secondary"]:hover,
+    button[data-testid="stBaseButton-secondary"]:hover {
+        background-color: #EFF6FF !important;
+        color: #1D4ED8 !important;
+        border-color: #3B82F6 !important;
+    }
+    button[kind="secondary"]:hover p,
+    button[data-testid="stBaseButton-secondary"]:hover p {
+        color: #1D4ED8 !important;
+    }
+
+    /* Botões Primários (Ativos / Comprar / Salvar) sempre no Azul Oficial (#2563EB) em vez do vermelho padrão do Streamlit */
+    button[kind="primary"],
+    button[data-testid="stBaseButton-primary"],
+    [data-testid="stLinkButton"] a[kind="primary"] {
+        background: linear-gradient(90deg, #2563EB 0%, #1D4ED8 100%) !important;
+        background-color: #2563EB !important;
+        color: #FFFFFF !important;
+        border: 1px solid #1D4ED8 !important;
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        box-shadow: 0 3px 10px rgba(37, 99, 235, 0.22) !important;
+    }
+    button[kind="primary"] p,
+    button[kind="primary"] span,
+    button[data-testid="stBaseButton-primary"] p,
+    button[data-testid="stBaseButton-primary"] span {
+        color: #FFFFFF !important;
+    }
+    button[kind="primary"]:hover,
+    button[data-testid="stBaseButton-primary"]:hover {
+        background: linear-gradient(90deg, #1D4ED8 0%, #1E40AF 100%) !important;
+        border-color: #1E40AF !important;
+        color: #FFFFFF !important;
+    }
+
+    /* Pílulas de Departamentos e Categorias (st.pills / st.segmented_control) sempre Claras */
+    [data-testid="stBaseButton-pills"],
+    button[kind="pills"] {
+        background-color: #FFFFFF !important;
+        color: #1E293B !important;
+        border: 1px solid #CBD5E1 !important;
+    }
+    [data-testid="stBaseButton-pills"] p,
+    [data-testid="stBaseButton-pills"] span,
+    button[kind="pills"] p,
+    button[kind="pills"] span {
+        color: #1E293B !important;
+    }
+    [data-testid="stBaseButton-pillsActive"],
+    button[kind="pillsActive"] {
+        background-color: #EFF6FF !important;
+        color: #1D4ED8 !important;
+        border: 1.5px solid #2563EB !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stBaseButton-pillsActive"] p,
+    [data-testid="stBaseButton-pillsActive"] span,
+    button[kind="pillsActive"] p,
+    button[kind="pillsActive"] span {
+        color: #1D4ED8 !important;
+    }
+
+    /* Modais (@st.dialog), Expanders, Tabs e Popovers sempre Claros */
+    [data-testid="stDialog"] [role="dialog"],
+    [data-testid="stExpander"],
+    [data-testid="stExpander"] details,
+    [data-testid="stPopoverBody"] {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border-color: #CBD5E1 !important;
+    }
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
+    [data-testid="stMarkdownContainer"] p,
+    [data-testid="stMarkdownContainer"] li,
+    [data-testid="stCaptionContainer"],
+    label[data-testid="stWidgetLabel"] p {
+        color: #0F172A !important;
     }
 
     /* Top Promocional Loja */
