@@ -79,14 +79,367 @@ st.markdown(
         max-width: 100vw !important;
         background-color: #F1F5F9 !important;
         color: #0F172A !important;
+        color-scheme: light !important;
     }
 
     /* Cartões e Containers Claros, Suaves e Profissionais (Nada muito escuro) */
-    [data-testid="stVerticalBlockBorderWrapper"] {
+    [data-testid="stVerticalBlockBorderWrapper"],
+    [data-testid="stForm"] {
         background-color: #FFFFFF !important;
         border: 1px solid #CBD5E1 !important;
         border-radius: 14px !important;
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04) !important;
+    }
+
+    /* =================================================================
+       BLINDAGEM DE TEMA CLARO (STREAMLIT CLOUD / NAVEGADOR EM MODO ESCURO)
+       Garante que botões, pílulas, campos de busca/texto, números e selects
+       fiquem 100% claros e legíveis mesmo sem config.toml no servidor.
+       ================================================================= */
+
+    /* 1. Botões Primários e Submit de Formulários (Azul Oficial #2563EB) */
+    button[kind="primary"],
+    button[kind="primaryFormSubmit"],
+    [data-testid="stBaseButton-primary"],
+    [data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stFormSubmitButton"] button {
+        background: linear-gradient(90deg, #2563EB 0%, #1D4ED8 100%) !important;
+        background-color: #2563EB !important;
+        color: #FFFFFF !important;
+        border: 1px solid #1D4ED8 !important;
+        border-radius: 10px !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 8px rgba(37, 99, 235, 0.22) !important;
+    }
+    button[kind="primary"] p,
+    button[kind="primary"] span,
+    button[kind="primary"] div,
+    button[kind="primaryFormSubmit"] p,
+    button[kind="primaryFormSubmit"] span,
+    button[kind="primaryFormSubmit"] div,
+    [data-testid="stBaseButton-primary"] p,
+    [data-testid="stBaseButton-primary"] span,
+    [data-testid="stBaseButton-primaryFormSubmit"] p,
+    [data-testid="stBaseButton-primaryFormSubmit"] span,
+    [data-testid="stFormSubmitButton"] button p,
+    [data-testid="stFormSubmitButton"] button span {
+        color: #FFFFFF !important;
+    }
+    button[kind="primary"]:hover,
+    button[kind="primaryFormSubmit"]:hover,
+    [data-testid="stBaseButton-primary"]:hover,
+    [data-testid="stBaseButton-primaryFormSubmit"]:hover,
+    [data-testid="stFormSubmitButton"] button:hover {
+        background: linear-gradient(90deg, #1D4ED8 0%, #1E40AF 100%) !important;
+        background-color: #1D4ED8 !important;
+        border-color: #1E40AF !important;
+        color: #FFFFFF !important;
+    }
+
+    /* 2. Botões Secundários (Topo da Loja, + Carrinho, Ver Detalhes, Paginação, Rodapé) */
+    button[kind="secondary"],
+    button[kind="secondaryFormSubmit"],
+    [data-testid="stBaseButton-secondary"],
+    [data-testid="stBaseButton-secondaryFormSubmit"] {
+        background: #FFFFFF !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04) !important;
+    }
+    button[kind="secondary"] p,
+    button[kind="secondary"] span,
+    button[kind="secondary"] div,
+    button[kind="secondaryFormSubmit"] p,
+    button[kind="secondaryFormSubmit"] span,
+    button[kind="secondaryFormSubmit"] div,
+    [data-testid="stBaseButton-secondary"] p,
+    [data-testid="stBaseButton-secondary"] span,
+    [data-testid="stBaseButton-secondaryFormSubmit"] p,
+    [data-testid="stBaseButton-secondaryFormSubmit"] span {
+        color: #0F172A !important;
+    }
+    button[kind="secondary"]:hover,
+    button[kind="secondaryFormSubmit"]:hover,
+    [data-testid="stBaseButton-secondary"]:hover,
+    [data-testid="stBaseButton-secondaryFormSubmit"]:hover {
+        background: #EFF6FF !important;
+        background-color: #EFF6FF !important;
+        color: #1D4ED8 !important;
+        border-color: #93C5FD !important;
+    }
+    button[kind="secondary"]:hover p,
+    button[kind="secondary"]:hover span,
+    [data-testid="stBaseButton-secondary"]:hover p,
+    [data-testid="stBaseButton-secondary"]:hover span {
+        color: #1D4ED8 !important;
+    }
+
+    /* Botões Desabilitados (Paginação na 1ª/última página, Esgotado) */
+    button:disabled,
+    button[disabled] {
+        background: #F1F5F9 !important;
+        background-color: #F1F5F9 !important;
+        color: #94A3B8 !important;
+        border: 1px solid #E2E8F0 !important;
+        opacity: 0.75 !important;
+        box-shadow: none !important;
+    }
+    button:disabled p,
+    button:disabled span,
+    button[disabled] p,
+    button[disabled] span {
+        color: #94A3B8 !important;
+    }
+
+    /* 3. Pílulas de Departamentos, Categorias e Subcategorias (st.pills) */
+    button[kind="pills"],
+    [data-testid="stBaseButton-pills"],
+    [class*="st-key-pills_"] button:not([kind="pillsActive"]):not([data-testid="stBaseButton-pillsActive"]) {
+        background: #FFFFFF !important;
+        background-color: #FFFFFF !important;
+        color: #1E293B !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 999px !important;
+        font-weight: 600 !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
+    }
+    button[kind="pills"] p,
+    button[kind="pills"] span,
+    button[kind="pills"] div,
+    [data-testid="stBaseButton-pills"] p,
+    [data-testid="stBaseButton-pills"] span,
+    [data-testid="stBaseButton-pills"] div,
+    [class*="st-key-pills_"] button:not([kind="pillsActive"]):not([data-testid="stBaseButton-pillsActive"]) p,
+    [class*="st-key-pills_"] button:not([kind="pillsActive"]):not([data-testid="stBaseButton-pillsActive"]) span {
+        color: #1E293B !important;
+    }
+    button[kind="pills"]:hover,
+    [data-testid="stBaseButton-pills"]:hover {
+        background: #F8FAFC !important;
+        background-color: #F8FAFC !important;
+        border-color: #93C5FD !important;
+        color: #1D4ED8 !important;
+    }
+
+    /* Pílula Selecionada / Ativa (Azul Suave #EFF6FF com Borda #2563EB) */
+    button[kind="pillsActive"],
+    [data-testid="stBaseButton-pillsActive"],
+    [class*="st-key-pills_"] button[kind="pillsActive"],
+    [class*="st-key-pills_"] button[data-testid="stBaseButton-pillsActive"] {
+        background: #EFF6FF !important;
+        background-color: #EFF6FF !important;
+        color: #1D4ED8 !important;
+        border: 1.5px solid #2563EB !important;
+        border-radius: 999px !important;
+        font-weight: 700 !important;
+        box-shadow: 0 2px 6px rgba(37, 99, 235, 0.14) !important;
+    }
+    button[kind="pillsActive"] p,
+    button[kind="pillsActive"] span,
+    button[kind="pillsActive"] div,
+    [data-testid="stBaseButton-pillsActive"] p,
+    [data-testid="stBaseButton-pillsActive"] span,
+    [data-testid="stBaseButton-pillsActive"] div,
+    [class*="st-key-pills_"] button[kind="pillsActive"] p,
+    [class*="st-key-pills_"] button[kind="pillsActive"] span {
+        color: #1D4ED8 !important;
+        font-weight: 700 !important;
+    }
+
+    /* 4. Campos de Texto (st.text_input), Números (st.number_input) e Área de Texto (st.text_area) */
+    [data-testid="stTextInputRootElement"],
+    [data-testid="stNumberInputContainer"],
+    [data-testid="stTextAreaRootElement"],
+    [data-baseweb="input"],
+    [data-baseweb="input"] > div,
+    [data-baseweb="base-input"],
+    [data-baseweb="textarea"] {
+        background: #FFFFFF !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stTextInputRootElement"]:focus-within,
+    [data-testid="stNumberInputContainer"]:focus-within,
+    [data-testid="stTextAreaRootElement"]:focus-within,
+    [data-baseweb="input"]:focus-within {
+        border-color: #2563EB !important;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15) !important;
+    }
+    [data-testid="stTextInputField"],
+    [data-testid="stNumberInputField"],
+    [data-testid="stTextArea"] textarea,
+    [data-baseweb="input"] input,
+    [data-baseweb="base-input"] input,
+    [data-baseweb="textarea"] textarea,
+    .stApp input[type="text"],
+    .stApp input[type="password"],
+    .stApp input[type="number"],
+    .stApp input[type="email"],
+    .stApp input[type="tel"],
+    .stApp input[type="search"],
+    .stApp textarea {
+        background: transparent !important;
+        background-color: transparent !important;
+        color: #0F172A !important;
+        -webkit-text-fill-color: #0F172A !important;
+        caret-color: #2563EB !important;
+    }
+    [data-testid="stTextInputField"]::placeholder,
+    [data-testid="stNumberInputField"]::placeholder,
+    [data-testid="stTextArea"] textarea::placeholder,
+    .stApp input::placeholder,
+    .stApp textarea::placeholder {
+        color: #64748B !important;
+        -webkit-text-fill-color: #64748B !important;
+        opacity: 1 !important;
+    }
+    /* Evita fundo escuro no autopreenchimento do Chrome */
+    .stApp input:-webkit-autofill,
+    .stApp input:-webkit-autofill:hover,
+    .stApp input:-webkit-autofill:focus,
+    .stApp input:-webkit-autofill:active {
+        -webkit-box-shadow: 0 0 0 40px #FFFFFF inset !important;
+        -webkit-text-fill-color: #0F172A !important;
+        caret-color: #2563EB !important;
+    }
+    /* Botões +/- do st.number_input e olho de senha do st.text_input */
+    [data-testid="stNumberInputStepDown"],
+    [data-testid="stNumberInputStepUp"] {
+        background: #F8FAFC !important;
+        background-color: #F8FAFC !important;
+        color: #0F172A !important;
+        border-left: 1px solid #E2E8F0 !important;
+    }
+    [data-testid="stNumberInputStepDown"]:hover:enabled,
+    [data-testid="stNumberInputStepUp"]:hover:enabled {
+        background: #2563EB !important;
+        background-color: #2563EB !important;
+        color: #FFFFFF !important;
+    }
+    [data-testid="stTextInputRootElement"] button {
+        background: transparent !important;
+        color: #475569 !important;
+        border: none !important;
+    }
+    [data-testid="stTextInputRootElement"] button svg {
+        fill: #475569 !important;
+        color: #475569 !important;
+    }
+
+    /* 5. Caixas de Seleção / Filtros de Ordenação e Paginação (st.selectbox) */
+    [data-testid="stSelectbox"] div:has(> input),
+    [data-testid="stSelectbox"] [data-baseweb="select"] > div,
+    [data-baseweb="select"] > div {
+        background: #FFFFFF !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stSelectbox"] input,
+    [data-testid="stSelectbox"] span,
+    [data-testid="stSelectbox"] div,
+    [data-testid="stSelectbox"] button,
+    [data-testid="stSelectbox"] svg,
+    [data-baseweb="select"] span,
+    [data-baseweb="select"] div,
+    [data-baseweb="select"] svg {
+        color: #0F172A !important;
+        -webkit-text-fill-color: #0F172A !important;
+    }
+    /* Menu suspenso aberto do st.selectbox (React Aria e BaseWeb) */
+    [data-testid="stSelectboxVirtualDropdown"],
+    [data-testid="stSelectboxVirtualDropdown"] [role="listbox"],
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"],
+    [data-baseweb="popover"],
+    [data-baseweb="menu"],
+    [data-baseweb="menu"] li,
+    [role="listbox"],
+    [role="option"] {
+        background: #FFFFFF !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+    }
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"]:hover,
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"][data-focused="true"],
+    [data-testid="stSelectboxVirtualDropdown"] [role="option"][aria-selected="true"],
+    [data-baseweb="menu"] li:hover,
+    [role="option"]:hover,
+    [role="option"][ aria-selected="true"] {
+        background: #EFF6FF !important;
+        background-color: #EFF6FF !important;
+        color: #1D4ED8 !important;
+    }
+
+    /* 6. Checkboxes (Ativo na Lista de Produtos e Filtro "Só disponível / estoque") */
+    [data-testid="stCheckbox"] label > div:first-of-type {
+        background-color: #FFFFFF !important;
+        border: 1.5px solid #94A3B8 !important;
+    }
+    [data-testid="stCheckbox"] label:has(input:checked) > div:first-of-type,
+    [data-testid="stCheckbox"] label > div:first-of-type:has(svg) {
+        background-color: #2563EB !important;
+        border-color: #2563EB !important;
+    }
+    [data-testid="stCheckbox"] label > div:first-of-type svg {
+        stroke: #FFFFFF !important;
+    }
+    [data-testid="stCheckbox"] p,
+    [data-testid="stCheckbox"] span {
+        color: #0F172A !important;
+    }
+
+    /* 7. Rótulos (Labels), Abas (st.tabs), Expanders (st.expander), Upload e Modais (st.dialog) */
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stWidgetLabel"] span,
+    [data-testid="stCaptionContainer"] p {
+        color: #334155 !important;
+    }
+    [data-testid="stTabs"] button[role="tab"] {
+        color: #475569 !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+        color: #2563EB !important;
+        font-weight: 700 !important;
+    }
+    [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+        background-color: #2563EB !important;
+    }
+    [data-testid="stExpander"],
+    [data-testid="stExpander"] details,
+    [data-testid="stExpanderDetails"] {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border-color: #CBD5E1 !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stExpander"] summary,
+    [data-testid="stExpander"] summary p,
+    [data-testid="stExpander"] summary span,
+    [data-testid="stExpander"] summary svg {
+        color: #0F172A !important;
+        fill: #0F172A !important;
+    }
+    [data-testid="stFileUploaderDropzone"] {
+        background-color: #F8FAFC !important;
+        border: 1.5px dashed #93C5FD !important;
+        color: #0F172A !important;
+    }
+    [data-testid="stFileUploaderDropzone"] span,
+    [data-testid="stFileUploaderDropzone"] small,
+    [data-testid="stFileUploaderDropzone"] p {
+        color: #334155 !important;
+    }
+    [data-testid="stDialog"] [role="dialog"],
+    [data-testid="stDialog"] > div > div {
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
     }
 
     /* Top Promocional Loja */
@@ -390,12 +743,24 @@ st.markdown(
         min-height: 38px !important;
         transition: all 0.15s ease !important;
     }
+    [class*="st-key-nav_item_"] button[kind="tertiary"] p,
+    [class*="st-key-nav_item_"] button[kind="tertiary"] span,
+    [class*="st-key-nav_item_"] button[data-testid="stBaseButton-tertiary"] p,
+    [class*="st-key-nav_item_"] button[data-testid="stBaseButton-tertiary"] span {
+        color: #334155 !important;
+    }
     [class*="st-key-nav_item_"] button[kind="tertiary"]:hover,
     [class*="st-key-nav_item_"] button[data-testid="stBaseButton-tertiary"]:hover {
         background: #EFF6FF !important;
         color: #1D4ED8 !important;
         border-color: #BFDBFE !important;
         transform: translateX(2px);
+    }
+    [class*="st-key-nav_item_"] button[kind="tertiary"]:hover p,
+    [class*="st-key-nav_item_"] button[kind="tertiary"]:hover span,
+    [class*="st-key-nav_item_"] button[data-testid="stBaseButton-tertiary"]:hover p,
+    [class*="st-key-nav_item_"] button[data-testid="stBaseButton-tertiary"]:hover span {
+        color: #1D4ED8 !important;
     }
 
     /* Botão ATIVO / SELECIONADO do menu lateral (Primary -> Figma Pill Azul) */
