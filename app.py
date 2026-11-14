@@ -25,6 +25,7 @@ import hashlib
 import html
 import io
 import json
+import os
 import re
 import smtplib
 import urllib.parse
@@ -38,6 +39,34 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 from supabase import create_client
+
+# =====================================================================
+# FORÇAR TEMA CLARO OFICIAL NO STREAMLIT (LOCALHOST E STREAMLIT CLOUD)
+# =====================================================================
+try:
+    os.makedirs(".streamlit", exist_ok=True)
+    _cfg_toml_path = os.path.join(".streamlit", "config.toml")
+    _cfg_toml_content = (
+        '[theme]\n'
+        'base = "light"\n'
+        'primaryColor = "#2563EB"\n'
+        'backgroundColor = "#F8FAFC"\n'
+        'secondaryBackgroundColor = "#FFFFFF"\n'
+        'textColor = "#0F172A"\n'
+    )
+    if not os.path.exists(_cfg_toml_path):
+        with open(_cfg_toml_path, "w", encoding="utf-8") as _f_cfg:
+            _f_cfg.write(_cfg_toml_content)
+except Exception:
+    pass
+try:
+    st._config.set_option("theme.base", "light")
+    st._config.set_option("theme.primaryColor", "#2563EB")
+    st._config.set_option("theme.backgroundColor", "#F8FAFC")
+    st._config.set_option("theme.secondaryBackgroundColor", "#FFFFFF")
+    st._config.set_option("theme.textColor", "#0F172A")
+except Exception:
+    pass
 
 # Configuração da Página
 st.set_page_config(
@@ -102,19 +131,53 @@ st.markdown(
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04) !important;
     }
 
-    /* Inputs de Texto, Busca, Número, Textarea e Selectbox sempre Claros */
+    /* Inputs de Texto, Busca, Número, Senha, Textarea e Selectbox sempre Claros */
+    [data-testid="stTextInput"] div[data-baseweb="input"],
+    [data-testid="stTextInput"] div[data-baseweb="base-input"],
+    [data-testid="stNumberInput"] div[data-baseweb="input"],
+    [data-testid="stNumberInput"] div[data-baseweb="base-input"],
+    [data-testid="stNumberInput"] button,
+    [data-testid="stTextArea"] div[data-baseweb="textarea"],
+    [data-testid="stTextArea"] div[data-baseweb="base-input"],
+    [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
     [data-baseweb="input"],
     [data-baseweb="input"] > div,
     [data-baseweb="base-input"],
     [data-baseweb="textarea"],
     [data-baseweb="select"] > div {
         background-color: #FFFFFF !important;
+        background: #FFFFFF !important;
         color: #0F172A !important;
         border-color: #CBD5E1 !important;
         border-radius: 10px !important;
     }
-    input, textarea, [data-baseweb="input"] input, [data-baseweb="textarea"] textarea, [data-baseweb="select"] span, [data-baseweb="select"] div {
+    /* Botão de mostrar/ocultar senha e controles internos de inputs */
+    [data-baseweb="input"] button,
+    [data-baseweb="base-input"] button,
+    [data-testid="stNumberInputStepDown"],
+    [data-testid="stNumberInputStepUp"] {
+        background-color: #F8FAFC !important;
+        color: #334155 !important;
+    }
+    input, textarea,
+    [data-baseweb="input"] input,
+    [data-baseweb="base-input"] input,
+    [data-baseweb="textarea"] textarea,
+    [data-baseweb="select"] span,
+    [data-baseweb="select"] div,
+    [data-baseweb="select"] svg {
+        background-color: transparent !important;
         color: #0F172A !important;
+        fill: #334155 !important;
+        -webkit-text-fill-color: #0F172A !important;
+        caret-color: #2563EB !important;
+    }
+    /* Corrige o fundo escuro do preenchimento automático (Autofill) do Chrome/Edge */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus,
+    input:-webkit-autofill:active {
+        -webkit-box-shadow: 0 0 0 40px #FFFFFF inset !important;
         -webkit-text-fill-color: #0F172A !important;
         caret-color: #2563EB !important;
     }
@@ -124,7 +187,13 @@ st.markdown(
         opacity: 1 !important;
     }
     /* Menu suspenso do Selectbox / Dropdown */
-    [data-baseweb="popover"] div, [data-baseweb="menu"], [data-baseweb="menu"] li, [role="listbox"], [role="option"] {
+    [data-baseweb="popover"],
+    [data-baseweb="popover"] > div,
+    [data-baseweb="menu"],
+    [data-baseweb="menu"] ul,
+    [data-baseweb="menu"] li,
+    [role="listbox"],
+    [role="option"] {
         background-color: #FFFFFF !important;
         color: #0F172A !important;
     }
@@ -133,10 +202,13 @@ st.markdown(
         color: #1D4ED8 !important;
     }
 
-    /* Botões Secundários (Inativos da barra de navegação, categorias, etc.) sempre Brancos com Texto Escuro */
+    /* Botões Secundários e de Formulário sempre Claros ou no Azul Oficial */
     button[kind="secondary"],
-    button[data-testid="stBaseButton-secondary"] {
+    button[data-testid="stBaseButton-secondary"],
+    button[kind="secondaryFormSubmit"],
+    button[data-testid="stBaseButton-secondaryFormSubmit"] {
         background-color: #FFFFFF !important;
+        background: #FFFFFF !important;
         color: #0F172A !important;
         border: 1px solid #CBD5E1 !important;
         border-radius: 10px !important;
@@ -146,12 +218,17 @@ st.markdown(
     button[kind="secondary"] p,
     button[kind="secondary"] span,
     button[data-testid="stBaseButton-secondary"] p,
-    button[data-testid="stBaseButton-secondary"] span {
+    button[data-testid="stBaseButton-secondary"] span,
+    button[kind="secondaryFormSubmit"] p,
+    button[data-testid="stBaseButton-secondaryFormSubmit"] p {
         color: #0F172A !important;
     }
     button[kind="secondary"]:hover,
-    button[data-testid="stBaseButton-secondary"]:hover {
+    button[data-testid="stBaseButton-secondary"]:hover,
+    button[kind="secondaryFormSubmit"]:hover,
+    button[data-testid="stBaseButton-secondaryFormSubmit"]:hover {
         background-color: #EFF6FF !important;
+        background: #EFF6FF !important;
         color: #1D4ED8 !important;
         border-color: #3B82F6 !important;
     }
@@ -160,9 +237,12 @@ st.markdown(
         color: #1D4ED8 !important;
     }
 
-    /* Botões Primários (Ativos / Comprar / Salvar) sempre no Azul Oficial (#2563EB) em vez do vermelho padrão do Streamlit */
+    /* Botões Primários e Submit de Formulários (Entrar no Painel, Comprar, Salvar) sempre no Azul Oficial (#2563EB) */
     button[kind="primary"],
     button[data-testid="stBaseButton-primary"],
+    button[kind="primaryFormSubmit"],
+    button[data-testid="stBaseButton-primaryFormSubmit"],
+    [data-testid="stFormSubmitButton"] button,
     [data-testid="stLinkButton"] a[kind="primary"] {
         background: linear-gradient(90deg, #2563EB 0%, #1D4ED8 100%) !important;
         background-color: #2563EB !important;
@@ -175,41 +255,92 @@ st.markdown(
     button[kind="primary"] p,
     button[kind="primary"] span,
     button[data-testid="stBaseButton-primary"] p,
-    button[data-testid="stBaseButton-primary"] span {
+    button[data-testid="stBaseButton-primary"] span,
+    button[kind="primaryFormSubmit"] p,
+    button[data-testid="stBaseButton-primaryFormSubmit"] p,
+    [data-testid="stFormSubmitButton"] button p,
+    [data-testid="stFormSubmitButton"] button span {
         color: #FFFFFF !important;
     }
     button[kind="primary"]:hover,
-    button[data-testid="stBaseButton-primary"]:hover {
+    button[data-testid="stBaseButton-primary"]:hover,
+    button[kind="primaryFormSubmit"]:hover,
+    button[data-testid="stBaseButton-primaryFormSubmit"]:hover,
+    [data-testid="stFormSubmitButton"] button:hover {
         background: linear-gradient(90deg, #1D4ED8 0%, #1E40AF 100%) !important;
         border-color: #1E40AF !important;
         color: #FFFFFF !important;
     }
 
     /* Pílulas de Departamentos e Categorias (st.pills / st.segmented_control) sempre Claras */
+    [data-testid="stPills"] button,
+    [data-testid="stSegmentedControl"] button,
+    [data-baseweb="button-group"] button,
+    [class*="st-key-pills_"] button,
     [data-testid="stBaseButton-pills"],
     button[kind="pills"] {
         background-color: #FFFFFF !important;
+        background: #FFFFFF !important;
         color: #1E293B !important;
         border: 1px solid #CBD5E1 !important;
+        border-radius: 20px !important;
+        font-weight: 600 !important;
     }
+    [data-testid="stPills"] button p,
+    [data-testid="stPills"] button span,
+    [data-baseweb="button-group"] button p,
+    [data-baseweb="button-group"] button span,
+    [class*="st-key-pills_"] button p,
+    [class*="st-key-pills_"] button span,
     [data-testid="stBaseButton-pills"] p,
     [data-testid="stBaseButton-pills"] span,
     button[kind="pills"] p,
     button[kind="pills"] span {
         color: #1E293B !important;
     }
+    [data-testid="stPills"] button[aria-pressed="true"],
+    [data-testid="stPills"] button[aria-checked="true"],
+    [data-baseweb="button-group"] button[aria-pressed="true"],
+    [data-baseweb="button-group"] button[aria-checked="true"],
+    [class*="st-key-pills_"] button[aria-pressed="true"],
+    [class*="st-key-pills_"] button[kind="pillsActive"],
     [data-testid="stBaseButton-pillsActive"],
     button[kind="pillsActive"] {
         background-color: #EFF6FF !important;
+        background: #EFF6FF !important;
         color: #1D4ED8 !important;
         border: 1.5px solid #2563EB !important;
         font-weight: 700 !important;
     }
+    [data-testid="stPills"] button[aria-pressed="true"] p,
+    [data-testid="stPills"] button[aria-pressed="true"] span,
+    [data-baseweb="button-group"] button[aria-pressed="true"] p,
+    [class*="st-key-pills_"] button[aria-pressed="true"] p,
+    [class*="st-key-pills_"] button[kind="pillsActive"] p,
     [data-testid="stBaseButton-pillsActive"] p,
     [data-testid="stBaseButton-pillsActive"] span,
     button[kind="pillsActive"] p,
     button[kind="pillsActive"] span {
         color: #1D4ED8 !important;
+    }
+
+    /* Checkboxes e File Uploader sempre Claros */
+    [data-testid="stCheckbox"] label span,
+    [data-testid="stCheckbox"] p {
+        color: #0F172A !important;
+    }
+    [data-testid="stFileUploader"] section {
+        background-color: #F8FAFC !important;
+        border: 1px dashed #93C5FD !important;
+        color: #0F172A !important;
+    }
+
+    /* Abas (st.tabs) com sublinhado Azul (#2563EB) em vez de vermelho */
+    [data-baseweb="tab-list"] button[aria-selected="true"] {
+        color: #2563EB !important;
+    }
+    [data-baseweb="tab-highlight"] {
+        background-color: #2563EB !important;
     }
 
     /* Modais (@st.dialog), Expanders, Tabs e Popovers sempre Claros */
