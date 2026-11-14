@@ -25,7 +25,6 @@ import hashlib
 import html
 import io
 import json
-import os
 import re
 import smtplib
 import urllib.parse
@@ -39,34 +38,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 from supabase import create_client
-
-# =====================================================================
-# FORÇAR TEMA CLARO OFICIAL NO STREAMLIT (LOCALHOST E STREAMLIT CLOUD)
-# =====================================================================
-try:
-    os.makedirs(".streamlit", exist_ok=True)
-    _cfg_toml_path = os.path.join(".streamlit", "config.toml")
-    _cfg_toml_content = (
-        '[theme]\n'
-        'base = "light"\n'
-        'primaryColor = "#2563EB"\n'
-        'backgroundColor = "#F8FAFC"\n'
-        'secondaryBackgroundColor = "#FFFFFF"\n'
-        'textColor = "#0F172A"\n'
-    )
-    if not os.path.exists(_cfg_toml_path):
-        with open(_cfg_toml_path, "w", encoding="utf-8") as _f_cfg:
-            _f_cfg.write(_cfg_toml_content)
-except Exception:
-    pass
-try:
-    st._config.set_option("theme.base", "light")
-    st._config.set_option("theme.primaryColor", "#2563EB")
-    st._config.set_option("theme.backgroundColor", "#F8FAFC")
-    st._config.set_option("theme.secondaryBackgroundColor", "#FFFFFF")
-    st._config.set_option("theme.textColor", "#0F172A")
-except Exception:
-    pass
 
 # Configuração da Página
 st.set_page_config(
