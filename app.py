@@ -2360,42 +2360,83 @@ def testar_conexao_mercadopago(token_teste: str) -> tuple:
 def enviar_notificacao_status_cliente(ped: dict, novo_status: str, rastreio: str = "") -> tuple:
     """
     Gera a mensagem e link de WhatsApp para o cliente e dispara e-mail automático (se SMTP estiver ativo)
-    e webhook WhatsApp opcional sempre que o Admin mudar o status do pedido.
+    e webhook WhatsApp opcional sempre que o Admin mudar o status ou a modalidade de entrega do pedido.
     Retorna (email_enviado: bool, log_notificacao: str, url_whatsapp_cliente: str).
     """
     cfg_n = obter_notificacoes_config()
     cfg_lj = st.session_state.get("config_loja", {})
+    fisc_lj = st.session_state.get("dados_fiscais_loja", {})
     nome_loja = cfg_lj.get("nome_loja", "Tags Informática")
 
     pid = ped.get("id", "")
     nome_cli = ped.get("cliente_nome", "Cliente")
     email_cli = (ped.get("cliente_email") or "").strip()
     whats_cli = re.sub(r"\D", "", str(ped.get("cliente_whatsapp") or ""))
-    rastreio_limpo = (rastreio or obter_rastreio_pedido(ped) or "").strip().upper()
+    rastreio_limpo = (rastreio or obter_rastreio_pedido(ped) or "").strip()
     total_ped = float(ped.get("valor_total") or 0.0)
+    frete_ped = float(ped.get("valor_frete") or 0.0)
 
-    mapa_status_amigavel = {
-        "pendente": ("🕒 Aguardando Confirmação de Pagamento", "Recebemos seu pedido e estamos aguardando a confirmação do pagamento para iniciar o envio."),
-        "pago": ("✅ Pagamento Aprovado & Em Separação!", "Ótima notícia! Seu pagamento foi confirmado e nossa equipe já está separando e embalando seu(s) produto(s) no Centro de Distribuição."),
-        "enviado": ("🚚 Pedido Enviado / Em Transporte!", "Seu pedido já saiu para entrega! Acompanhe a movimentação pelo código de rastreio abaixo."),
-        "entregue": ("🎉 Pedido Entregue com Sucesso!", "Seu pedido consta como entregue! Muito obrigado por comprar na Tags Informática. Conte sempre conosco!"),
-        "cancelado": ("❌ Pedido Cancelado", "O status do seu pedido foi atualizado para cancelado. Caso tenha dúvidas, fale conosco pelo WhatsApp."),
-    }
+    itens_l = ped.get("itens") or []
+    meta_it = itens_l[0] if (itens_l and isinstance(itens_l[0], dict)) else {}
+    mod_frete_atual = str(ped.get("modalidade_frete") or meta_it.get("modalidade_frete") or "Entrega Padrão")
+    eh_retirada_not = "retira" in mod_frete_atual.lower()
+    eh_motoboy_not = "motoboy" in mod_frete_atual.lower() or "expressa" in mod_frete_atual.lower()
+    end_cd_loja = f"{fisc_lj.get('rua_origem', 'Av. Djalma Batista')}, {fisc_lj.get('numero_origem', '1000')} - {fisc_lj.get('bairro_origem', 'Chapada')}, {fisc_lj.get('cidade_origem', 'Manaus')}/{fisc_lj.get('estado_origem', 'AM')}"
+
+    st_low = (novo_status or "pendente").lower()
+    if eh_retirada_not:
+        mapa_status_amigavel = {
+            "pendente": ("🕒 Aguardando Confirmação de Pagamento", "Recebemos seu pedido para Retirada na Loja/CD e estamos aguardando a confirmação do pagamento."),
+            "pago": ("✅ Pagamento Aprovado & Separando para Retirada!", "Seu pagamento foi confirmado! Já estamos separando seu(s) produto(s) e avisaremos assim que estiver pronto para você retirar."),
+            "pronto_retirada": ("🏢 Pedido Pronto para Retirada no Centro de Distribuição!", f"Seu pedido já está separado e pronto esperando por você!\n📍 *Local de Retirada:* {end_cd_loja}"),
+            "enviado": ("🏢 Pedido Pronto para Retirada no Centro de Distribuição!", f"Seu pedido já está separado e pronto esperando por você!\n📍 *Local de Retirada:* {end_cd_loja}"),
+            "entregue": ("🎉 Pedido Retirado com Sucesso!", "Confirmamos a retirada do seu pedido em nossa unidade! Muito obrigado por comprar na Tags Informática!"),
+            "cancelado": ("❌ Pedido Cancelado", "O status do seu pedido foi atualizado para cancelado. Caso tenha dúvidas, fale conosco pelo WhatsApp."),
+        }
+    elif eh_motoboy_not:
+        mapa_status_amigavel = {
+            "pendente": ("🕒 Aguardando Confirmação de Pagamento", "Recebemos seu pedido e estamos aguardando a confirmação do pagamento para agendar seu Motoboy Expresso."),
+            "pago": ("✅ Pagamento Aprovado & Em Separação!", "Seu pagamento foi confirmado! Nossa equipe já está preparando seu pedido para envio por Motoboy Expresso."),
+            "pronto_retirada": ("🛵 Pedido Pronto / Aguardando Motoboy!", "Seu pedido já está embalado e pronto para sair com o entregador."),
+            "enviado": ("🛵 Saiu para Entrega via Motoboy Expresso!", "Seu pedido acabou de sair para entrega! Fique atento ao seu endereço e telefone."),
+            "entregue": ("🎉 Pedido Entregue com Sucesso!", "Seu pedido consta como entregue! Muito obrigado por comprar na Tags Informática!"),
+            "cancelado": ("❌ Pedido Cancelado", "O status do seu pedido foi atualizado para cancelado. Caso tenha dúvidas, fale conosco pelo WhatsApp."),
+        }
+    else:
+        mapa_status_amigavel = {
+            "pendente": ("🕒 Aguardando Confirmação de Pagamento", "Recebemos seu pedido e estamos aguardando a confirmação do pagamento para iniciar o envio."),
+            "pago": ("✅ Pagamento Aprovado & Em Separação!", "Ótima notícia! Seu pagamento foi confirmado e nossa equipe já está separando e embalando seu(s) produto(s) no Centro de Distribuição."),
+            "pronto_retirada": ("🏢 Pedido Pronto para Retirada!", f"Seu pedido está pronto para retirada em: {end_cd_loja}"),
+            "enviado": ("🚚 Pedido Enviado / Em Transporte!", "Seu pedido já saiu para entrega! Acompanhe a movimentação pelo código/informação abaixo."),
+            "entregue": ("🎉 Pedido Entregue com Sucesso!", "Seu pedido consta como entregue! Muito obrigado por comprar na Tags Informática. Conte sempre conosco!"),
+            "cancelado": ("❌ Pedido Cancelado", "O status do seu pedido foi atualizado para cancelado. Caso tenha dúvidas, fale conosco pelo WhatsApp."),
+        }
+
     titulo_st, desc_st = mapa_status_amigavel.get(
-        (novo_status or "pendente").lower(),
+        st_low,
         (f"📦 Status Atualizado: {novo_status.upper()}", "O status do seu pedido foi atualizado em nossa loja."),
     )
 
-    itens_txt = ", ".join([f"{it.get('qtd', 1)}x {it.get('titulo', 'Produto')}" for it in (ped.get("itens") or []) if isinstance(it, dict)])
-    bloco_rastreio_w = f"\n🚚 *Código de Rastreio:* {rastreio_limpo}\n🔗 Rastrear: https://rastreamento.correios.com.br/app/index.php?objetos={rastreio_limpo}" if rastreio_limpo else ""
+    itens_txt = ", ".join([f"{it.get('qtd', 1)}x {it.get('titulo', 'Produto')}" for it in itens_l if isinstance(it, dict)])
+    if rastreio_limpo:
+        if eh_retirada_not:
+            bloco_rastreio_w = f"\n📍 *Instruções de Retirada:* {rastreio_limpo}"
+        elif eh_motoboy_not:
+            bloco_rastreio_w = f"\n🛵 *Info da Entrega:* {rastreio_limpo}"
+        else:
+            bloco_rastreio_w = f"\n🚚 *Código de Rastreio:* {rastreio_limpo.upper()}\n🔗 Rastrear: https://rastreamento.correios.com.br/app/index.php?objetos={urllib.parse.quote(rastreio_limpo.upper())}"
+    else:
+        bloco_rastreio_w = ""
 
+    txt_frete_w = "GRÁTIS / Retirada" if frete_ped <= 0 else f"R$ {frete_ped:.2f}"
     msg_whatsapp = (
         f"Olá, *{nome_cli}*! Tudo bem? 😊\n"
         f"Aqui é da *{nome_loja}* com uma atualização do seu *Pedido #{pid}*:\n\n"
         f"*{titulo_st}*\n"
         f"{desc_st}\n\n"
         f"📦 *Itens:* {itens_txt or 'Conforme pedido'}\n"
-        f"💰 *Total:* R$ {total_ped:.2f}"
+        f"🚚 *Modalidade:* {mod_frete_atual} ({txt_frete_w})\n"
+        f"💰 *Valor Total do Pedido:* R$ {total_ped:.2f}"
         f"{bloco_rastreio_w}\n\n"
         f"Qualquer dúvida, estamos à disposição por aqui!"
     )
@@ -5891,12 +5932,56 @@ if modo_admin_ativo:
 
                         badge_color = {
                             "pago": "#15803D",
+                            "pronto_retirada": "#7C3AED",
                             "enviado": "#1D4ED8",
                             "entregue": "#047857",
                             "cancelado": "#DC2626",
                             "pendente": "#B45309",
                         }.get(st_atual, "#475569")
 
+                        eh_retirada_ped = "retira" in str(mod_frete_ped).lower()
+                        eh_motoboy_ped = "motoboy" in str(mod_frete_ped).lower() or "expressa" in str(mod_frete_ped).lower()
+                        if eh_retirada_ped:
+                            mapa_rotulos_status = {
+                                "pendente": "🕒 Pendente (Aguardando Pagamento)",
+                                "pago": "✅ Pago (Separando p/ Retirada)",
+                                "pronto_retirada": "🏢 Pronto p/ Retirada na Loja/CD",
+                                "enviado": "🏢 Pronto p/ Retirada na Loja/CD",
+                                "entregue": "🎉 Retirado pelo Cliente (Concluído)",
+                                "cancelado": "❌ Pedido Cancelado",
+                            }
+                            status_opcoes = ["pendente", "pago", "pronto_retirada", "entregue", "cancelado"]
+                            st_atual_norm = "pronto_retirada" if st_atual == "enviado" else st_atual
+                            lbl_campo_rastreio = "📍 Obs. / Horário de Retirada (opcional)"
+                            ph_campo_rastreio = "Ex: Pronto na recepção (Seg-Sáb 8h-18h)"
+                        elif eh_motoboy_ped:
+                            mapa_rotulos_status = {
+                                "pendente": "🕒 Pendente (Aguardando Pagamento)",
+                                "pago": "✅ Pago (Separando p/ Motoboy)",
+                                "enviado": "🛵 Saiu p/ Entrega (Motoboy)",
+                                "pronto_retirada": "🛵 Pronto p/ Coleta do Motoboy",
+                                "entregue": "🎉 Entregue ao Cliente",
+                                "cancelado": "❌ Pedido Cancelado",
+                            }
+                            status_opcoes = ["pendente", "pago", "enviado", "entregue", "cancelado"]
+                            st_atual_norm = "enviado" if st_atual == "pronto_retirada" else st_atual
+                            lbl_campo_rastreio = "🛵 Info do Motoboy / Previsão (opcional)"
+                            ph_campo_rastreio = "Ex: Motoboy a caminho - entrega hoje"
+                        else:
+                            mapa_rotulos_status = {
+                                "pendente": "🕒 Pendente (Aguardando Pagamento)",
+                                "pago": "✅ Pago (Embalando p/ Envio)",
+                                "enviado": "🚚 Enviado / Em Transporte",
+                                "pronto_retirada": "🏢 Pronto p/ Retirada",
+                                "entregue": "🎉 Entregue ao Cliente",
+                                "cancelado": "❌ Pedido Cancelado",
+                            }
+                            status_opcoes = ["pendente", "pago", "enviado", "entregue", "cancelado"]
+                            st_atual_norm = "enviado" if st_atual == "pronto_retirada" else st_atual
+                            lbl_campo_rastreio = "🚚 Código de Rastreio (Correios/Transp.)"
+                            ph_campo_rastreio = "Ex: AA123456789BR"
+
+                        rotulo_badge_st = mapa_rotulos_status.get(st_atual, str(st_atual).upper())
                         cor_metodo = "#1D4ED8" if "MERCADO" in str(metodo_pg_ped).upper() else ("#15803D" if "TON" in str(metodo_pg_ped).upper() else "#047857")
                         badge_metodo = f"&nbsp;<span style='background:{cor_metodo}15; color:{cor_metodo}; border:1px solid {cor_metodo}45; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.75rem;'>💳 {html.escape(str(metodo_pg_ped))}</span>"
 
@@ -5904,14 +5989,15 @@ if modo_admin_ativo:
                             f"<h3 style='margin:0 0 6px 0; font-size:1.22rem; font-weight:800; color:#0F172A;'>Pedido #{ped['id']} — {html.escape(str(ped.get('cliente_nome') or 'Cliente'))}</h3>",
                             unsafe_allow_html=True,
                         )
+                        ico_rast_b = "📍 Obs:" if eh_retirada_ped else ("🛵 Entrega:" if eh_motoboy_ped else "🚚 Rastreio:")
                         rastreio_badge = (
-                            f"&nbsp;<span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #93C5FD; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.76rem;'>🚚 Rastreio: {html.escape(str(rastreio_atual))}</span>"
+                            f"&nbsp;<span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #93C5FD; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.76rem;'>{ico_rast_b} {html.escape(str(rastreio_atual))}</span>"
                             if rastreio_atual
                             else ""
                         )
                         c1.markdown(
                             f"<div style='margin-bottom:10px;'>"
-                            f"<span style='background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}55; padding:3px 10px; border-radius:12px; font-weight:800; font-size:0.76rem; text-transform:uppercase;'>Status: {html.escape(str(st_atual))}</span>"
+                            f"<span style='background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}55; padding:3px 10px; border-radius:12px; font-weight:800; font-size:0.76rem;'>{html.escape(rotulo_badge_st)}</span>"
                             f"{badge_metodo}{rastreio_badge}"
                             f"</div>",
                             unsafe_allow_html=True,
@@ -5924,6 +6010,9 @@ if modo_admin_ativo:
                         end_ped_esc = html.escape(str(ped.get("endereco_completo") or "-"))
                         cep_ped_esc = html.escape(str(ped.get("cep") or "-"))
                         frt_ped_esc = html.escape(str(mod_frete_ped))
+                        cor_bg_mod = "#F5F3FF" if eh_retirada_ped else "#EFF6FF"
+                        cor_tx_mod = "#6D28D9" if eh_retirada_ped else "#1D4ED8"
+                        cor_bd_mod = "#DDD6FE" if eh_retirada_ped else "#BFDBFE"
 
                         c1.markdown(
                             f"""
@@ -5935,7 +6024,7 @@ if modo_admin_ativo:
                                 </div>
                                 <div style="border-top:1px dashed #CBD5E1; padding-top:6px; color:#334155;">
                                     📍 <b>Endereço:</b> {end_ped_esc} <span style="color:#64748B;">(CEP: {cep_ped_esc})</span><br>
-                                    🚚 <b>Modalidade de Entrega:</b> <span style="background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; padding:1px 8px; border-radius:6px; font-weight:700; font-size:0.79rem;">{frt_ped_esc}</span>
+                                    🚚 <b>Modalidade Selecionada:</b> <span style="background:{cor_bg_mod}; color:{cor_tx_mod}; border:1px solid {cor_bd_mod}; padding:2px 8px; border-radius:6px; font-weight:700; font-size:0.79rem;">{frt_ped_esc}</span>
                                 </div>
                             </div>
                             """,
@@ -5958,6 +6047,9 @@ if modo_admin_ativo:
                                 linhas_itens_ped_html += f"<div style='margin-top:4px; color:#0F172A; font-weight:600; font-size:0.82rem;'>• {qtd_it_p}x {tit_it_esc}{txt_cst_item}</div>"
 
                         val_tot_ped_f = float(ped.get("valor_total") or 0.0)
+                        val_prods_ped_f = float(ped.get("valor_produtos") or (val_tot_ped_f - float(ped.get("valor_frete") or 0.0) + float(ped.get("valor_desconto") or 0.0)))
+                        val_frete_ped_f = float(ped.get("valor_frete") or 0.0)
+                        val_desc_ped_f = float(ped.get("valor_desconto") or 0.0)
                         lucro_deste_ped = val_tot_ped_f - custo_deste_ped
                         margem_deste_ped = (lucro_deste_ped / val_tot_ped_f * 100.0) if val_tot_ped_f > 0 else 0.0
 
@@ -5971,10 +6063,10 @@ if modo_admin_ativo:
                                     </span>
                                 </div>
                                 <div style="font-size:0.78rem; color:#475569; font-weight:600; border-bottom:1px solid #E2E8F0; padding-bottom:6px; margin-bottom:4px;">
-                                    Produtos: <b style="color:#0F172A;">R$ {float(ped.get('valor_produtos', val_tot_ped_f)):.2f}</b> &nbsp;|&nbsp;
+                                    Produtos: <b style="color:#0F172A;">R$ {val_prods_ped_f:.2f}</b> &nbsp;|&nbsp;
                                     Custo: <b style="color:#B45309;">R$ {custo_deste_ped:.2f}</b> &nbsp;|&nbsp;
-                                    Frete: <b style="color:#0F172A;">R$ {float(ped.get('valor_frete', 0)):.2f}</b> &nbsp;|&nbsp;
-                                    Desc.: <b style="color:#DC2626;">R$ {float(ped.get('valor_desconto', 0)):.2f}</b>
+                                    Frete: <b style="color:#1D4ED8;">R$ {val_frete_ped_f:.2f}</b> &nbsp;|&nbsp;
+                                    Desc.: <b style="color:#DC2626;">R$ {val_desc_ped_f:.2f}</b>
                                 </div>
                                 {linhas_itens_ped_html}
                             </div>
@@ -5982,13 +6074,18 @@ if modo_admin_ativo:
                             unsafe_allow_html=True,
                         )
 
-                        status_opcoes = ["pendente", "pago", "enviado", "entregue", "cancelado"]
-                        idx_st = status_opcoes.index(st_atual) if st_atual in status_opcoes else 0
-                        novo_st = c3.selectbox("Mudar Status Rápido", status_opcoes, index=idx_st, key=f"adm_v_st_{ped['id']}")
+                        idx_st = status_opcoes.index(st_atual_norm) if st_atual_norm in status_opcoes else 0
+                        novo_st = c3.selectbox(
+                            "Mudar Status Rápido (conforme Modalidade)",
+                            status_opcoes,
+                            index=idx_st,
+                            format_func=lambda s_cod, m_rot=mapa_rotulos_status: m_rot.get(s_cod, s_cod),
+                            key=f"adm_v_st_{ped['id']}",
+                        )
                         novo_rast = c3.text_input(
-                            "Código de Rastreio",
+                            lbl_campo_rastreio,
                             value=rastreio_atual,
-                            placeholder="Ex: AA123456789BR",
+                            placeholder=ph_campo_rastreio,
                             key=f"adm_v_rast_{ped['id']}",
                         )
                         if c3.button("💾 Salvar Status & Avisar Cliente", key=f"btn_v_st_{ped['id']}", type="primary", use_container_width=True):
@@ -5997,11 +6094,134 @@ if modo_admin_ativo:
                             st.session_state[f"notificacao_ped_{ped['id']}"] = {
                                 "url_whats": url_w_not,
                                 "log": log_not,
-                                "status": novo_st.upper(),
+                                "status": mapa_rotulos_status.get(novo_st, novo_st.upper()),
                                 "cliente": ped.get("cliente_nome", "Cliente"),
                             }
-                            st.toast(f"✅ Status do Pedido #{ped['id']} atualizado para {novo_st.upper()}!")
+                            st.toast(f"✅ Status do Pedido #{ped['id']} atualizado para {mapa_rotulos_status.get(novo_st, novo_st)}!")
                             st.rerun()
+
+                        # POPOVER RÁPIDO PARA MUDAR MODALIDADE DE ENTREGA (EX: RETIRADA -> MOTOBOY/CORREIOS) E RECALCULAR VALOR DO PEDIDO AUTOMATICAMENTE
+                        with c3.popover("🔄 Mudar Entrega / Adicionar Frete", use_container_width=True):
+                            st.markdown(f"##### 🚚 Alterar Modalidade de Entrega — Pedido #{ped['id']}")
+                            st.caption("Se o cliente pediu para trocar **Retirada** por **Entrega (Motoboy/Correios)** (ou vice-versa), selecione abaixo para somar o frete e atualizar o valor do pedido automaticamente em todo o sistema:")
+                            cfg_f_chg = obter_frete_config()
+                            opcoes_troca_mod = [
+                                (
+                                    f"{cfg_f_chg.get('retirada_nome', '🏢 Retirar Pessoalmente no Centro de Distribuição (Manaus/AM)')} ({cfg_f_chg.get('retirada_prazo', 'Pronto em 2h')})",
+                                    float(cfg_f_chg.get("retirada_valor") or 0.0),
+                                ),
+                                (
+                                    f"{cfg_f_chg.get('motoboy_nome', '⚡ Entrega Expressa Motoboy (Manaus/AM)')} ({cfg_f_chg.get('motoboy_prazo', 'Hoje ou 24h')})",
+                                    float(cfg_f_chg.get("motoboy_valor") or 15.0),
+                                ),
+                                (
+                                    f"{cfg_f_chg.get('pac_nome', '📦 Correios PAC (Econômico Nacional)')} ({cfg_f_chg.get('pac_prazo', '5 a 9 dias úteis')})",
+                                    float(cfg_f_chg.get("pac_valor") or 28.90),
+                                ),
+                                (
+                                    f"{cfg_f_chg.get('sedex_nome', '🚀 Correios SEDEX (Expresso Nacional)')} ({cfg_f_chg.get('sedex_prazo', '2 a 4 dias úteis')})",
+                                    float(cfg_f_chg.get("sedex_valor") or 49.90),
+                                ),
+                                (
+                                    "🎓 Liberação Digital / Online (Sem Custo de Frete)",
+                                    0.0,
+                                ),
+                            ]
+                            idx_mod_atual_chg = 0
+                            for idx_om, (nm_om, _) in enumerate(opcoes_troca_mod):
+                                if nm_om.split("(")[0].strip().lower() in str(mod_frete_ped).lower():
+                                    idx_mod_atual_chg = idx_om
+                                    break
+
+                            mod_sel_chg = st.selectbox(
+                                "Nova Modalidade de Entrega:",
+                                options=list(range(len(opcoes_troca_mod))),
+                                index=idx_mod_atual_chg,
+                                format_func=lambda i_m: f"{opcoes_troca_mod[i_m][0]} — R$ {opcoes_troca_mod[i_m][1]:.2f}",
+                                key=f"sel_chg_mod_frete_{ped['id']}",
+                            )
+                            nome_nova_mod, valor_frete_sugerido = opcoes_troca_mod[mod_sel_chg]
+                            novo_val_frete_in = st.number_input(
+                                "Valor do Frete a Cobrar no Pedido (R$):",
+                                min_value=0.0,
+                                value=float(valor_frete_sugerido),
+                                step=1.0,
+                                key=f"inp_chg_val_frete_{ped['id']}_{mod_sel_chg}",
+                                help="O valor padrão da modalidade já vem preenchido, mas você pode ajustar se desejar.",
+                            )
+                            novo_total_calc_chg = max(0.0, val_prods_ped_f - val_desc_ped_f + float(novo_val_frete_in))
+                            dif_frete_chg = novo_total_calc_chg - val_tot_ped_f
+                            sinal_dif = f"+R$ {dif_frete_chg:.2f}" if dif_frete_chg >= 0 else f"-R$ {abs(dif_frete_chg):.2f}"
+
+                            st.markdown(
+                                f"<div style='background:#EFF6FF; border:1px solid #93C5FD; border-radius:8px; padding:9px 12px; font-size:0.82rem; color:#1E3A8A; margin:6px 0;'>"
+                                f"• <b>Produtos (- Desc.):</b> R$ {(val_prods_ped_f - val_desc_ped_f):.2f}<br>"
+                                f"• <b>Frete Anterior:</b> R$ {val_frete_ped_f:.2f} ➜ <b>Novo Frete:</b> R$ {float(novo_val_frete_in):.2f} ({sinal_dif})<br>"
+                                f"• <b>Novo Valor Total do Pedido:</b> <span style='color:#047857; font-weight:900; font-size:0.95rem;'>R$ {novo_total_calc_chg:.2f}</span>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                            if st.button("💾 Aplicar Nova Entrega e Atualizar Valor no Sistema", key=f"btn_aplicar_chg_frete_{ped['id']}", type="primary", use_container_width=True):
+                                itens_chg = [dict(it_x) for it_x in (ped.get("itens") or []) if isinstance(it_x, dict)]
+                                resumo_t_chg = ", ".join(f"{i.get('qtd', 1)}x {i.get('titulo', 'Item')}" for i in itens_chg) or f"Pedido #{ped['id']}"
+                                novo_st_apos_mod = st_atual
+                                if "retira" not in nome_nova_mod.lower() and st_atual == "pronto_retirada":
+                                    novo_st_apos_mod = "pago"
+
+                                # Se o pedido ainda está pendente (ou se aumentou o valor), atualiza o link do Mercado Pago
+                                lnk_mp_novo_total = ""
+                                if obter_token_mercadopago_ativo() and novo_total_calc_chg > 0:
+                                    lnk_mp_novo_total = gerar_link_checkout_mercadopago(
+                                        titulo_pedido=resumo_t_chg[:120],
+                                        valor_total=novo_total_calc_chg,
+                                        pedido_id=ped["id"],
+                                        email_cliente=ped.get("cliente_email") or "",
+                                        nome_cliente=ped.get("cliente_nome") or "",
+                                        cpf_cliente=ped.get("cliente_cpf") or "",
+                                    )
+                                for it_u in itens_chg:
+                                    it_u["modalidade_frete"] = nome_nova_mod
+                                    if lnk_mp_novo_total:
+                                        it_u["link_mp"] = lnk_mp_novo_total
+
+                                try:
+                                    supabase.table("pedidos").update({
+                                        "modalidade_frete": nome_nova_mod,
+                                        "valor_frete": float(novo_val_frete_in),
+                                        "valor_produtos": float(val_prods_ped_f),
+                                        "valor_total": float(novo_total_calc_chg),
+                                        "status_pagamento": novo_st_apos_mod,
+                                        "itens": itens_chg,
+                                    }).eq("id", ped["id"]).execute()
+                                except Exception:
+                                    supabase.table("pedidos").update({
+                                        "valor_frete": float(novo_val_frete_in),
+                                        "valor_produtos": float(val_prods_ped_f),
+                                        "valor_total": float(novo_total_calc_chg),
+                                        "status_pagamento": novo_st_apos_mod,
+                                        "itens": itens_chg,
+                                    }).eq("id", ped["id"]).execute()
+
+                                whats_c_num = re.sub(r"\D", "", str(ped.get("cliente_whatsapp") or ""))
+                                msg_chg_w = (
+                                    f"Olá, *{ped.get('cliente_nome', 'Cliente')}*! Tudo bem? 😊\n"
+                                    f"Conforme combinado, atualizamos a modalidade de entrega do seu *Pedido #{ped['id']}* na *Tags Informática*:\n\n"
+                                    f"🚚 *Nova Modalidade:* {nome_nova_mod}\n"
+                                    f"📦 *Valor do Frete Adicionado:* R$ {float(novo_val_frete_in):.2f}\n"
+                                    f"💰 *Novo Valor Total do Pedido:* R$ {novo_total_calc_chg:.2f}\n"
+                                )
+                                if lnk_mp_novo_total and (st_atual == "pendente" or dif_frete_chg > 0):
+                                    msg_chg_w += f"\n💙 *Link Mercado Pago Atualizado:* {lnk_mp_novo_total}\n"
+                                url_w_chg = f"https://wa.me/55{whats_c_num}?text={urllib.parse.quote(msg_chg_w)}" if whats_c_num else ""
+                                st.session_state[f"notificacao_ped_{ped['id']}"] = {
+                                    "url_whats": url_w_chg,
+                                    "log": f"Modalidade alterada para '{nome_nova_mod}' e Valor Total atualizado automaticamente para R$ {novo_total_calc_chg:.2f} no Supabase!",
+                                    "status": f"ENTREGA ATUALIZADA (R$ {novo_total_calc_chg:.2f})",
+                                    "cliente": ped.get("cliente_nome", "Cliente"),
+                                }
+                                st.toast(f"✅ Entrega e valor do Pedido #{ped['id']} atualizados para R$ {novo_total_calc_chg:.2f}!")
+                                st.rerun()
 
                         notif_salva = st.session_state.get(f"notificacao_ped_{ped['id']}")
                         if notif_salva:
@@ -8450,32 +8670,66 @@ elif aba_loja == "pedidos":
         for ped_c in meus_pedidos:
             st_p = (ped_c.get("status_pagamento") or "pendente").lower()
             cod_rastreio_c = obter_rastreio_pedido(ped_c)
+            itens_ped_cli = ped_c.get("itens") or []
+            meta_ped_cli = itens_ped_cli[0] if (itens_ped_cli and isinstance(itens_ped_cli[0], dict)) else {}
+            mod_frete_cli = str(ped_c.get("modalidade_frete") or meta_ped_cli.get("modalidade_frete") or "Entrega Padrão")
+            eh_retirada_cli = "retira" in mod_frete_cli.lower()
+            eh_motoboy_cli = "motoboy" in mod_frete_cli.lower() or "expressa" in mod_frete_cli.lower()
+            val_frete_cli = float(ped_c.get("valor_frete") or 0.0)
+            val_prods_cli = float(ped_c.get("valor_produtos") or ped_c.get("valor_total") or 0.0)
+            val_desc_cli = float(ped_c.get("valor_desconto") or 0.0)
+            val_tot_cli = float(ped_c.get("valor_total") or 0.0)
 
             # Definir estágio da linha do tempo (1 a 4)
-            mapa_etapa = {"pendente": 1, "pago": 2, "enviado": 3, "entregue": 4, "cancelado": 0}
+            mapa_etapa = {"pendente": 1, "pago": 2, "pronto_retirada": 3, "enviado": 3, "entregue": 4, "cancelado": 0}
             etapa_atual = mapa_etapa.get(st_p, 1)
 
             with st.container(border=True):
                 c_hd1, c_hd2 = st.columns([3, 1.5])
                 with c_hd1:
                     st.markdown(f"### 🛍️ Pedido #{ped_c['id']} — {ped_c.get('cliente_nome')}")
-                    st.caption(f"📍 Entrega: {ped_c.get('endereco_completo')} (CEP: {ped_c.get('cep')})")
+                    st.caption(f"📍 Endereço: {ped_c.get('endereco_completo')} (CEP: {ped_c.get('cep')})")
+                    txt_frt_c = "GRÁTIS" if val_frete_cli <= 0 else f"R$ {val_frete_cli:.2f}"
+                    st.markdown(
+                        f"<div style='font-size:0.82rem; color:#334155; margin-bottom:8px;'>"
+                        f"🚚 <b>Modalidade Selecionada:</b> <span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; padding:2px 8px; border-radius:6px; font-weight:700;'>{html.escape(mod_frete_cli)} ({txt_frt_c})</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
                 with c_hd2:
                     st.markdown(
-                        f"<div style='text-align:right;'><span style='font-size:1.35rem; font-weight:800; color:#10B981;'>R$ {float(ped_c.get('valor_total', 0)):.2f}</span></div>",
+                        f"<div style='text-align:right;'>"
+                        f"<span style='font-size:1.35rem; font-weight:800; color:#10B981;'>R$ {val_tot_cli:.2f}</span><br>"
+                        f"<span style='font-size:0.75rem; color:#64748B;'>Produtos: R$ {val_prods_cli:.2f} • Frete: R$ {val_frete_cli:.2f}</span>"
+                        f"</div>",
                         unsafe_allow_html=True,
                     )
 
-                # LINHA DO TEMPO VISUAL DE 4 ETAPAS
+                # LINHA DO TEMPO VISUAL DE 4 ETAPAS (ADAPTADA PARA RETIRADA OU ENTREGA)
                 if st_p == "cancelado":
                     st.error("❌ Este pedido foi cancelado. Entre em contato com o suporte caso precise de ajuda.")
                 else:
-                    etapas_info = [
-                        (1, "🕒 Pedido Recebido", "Aguardando Pagamento"),
-                        (2, "✅ Pago & Separado", "Nota e preparação"),
-                        (3, "🚚 Em Transporte", "Enviado à transportadora"),
-                        (4, "🎉 Pedido Entregue", "Concluído com sucesso"),
-                    ]
+                    if eh_retirada_cli:
+                        etapas_info = [
+                            (1, "🕒 Pedido Recebido", "Aguardando Pagamento"),
+                            (2, "✅ Pago & Separando", "Preparando p/ retirada"),
+                            (3, "🏢 Pronto p/ Retirada", "Disponível no CD / Loja"),
+                            (4, "🎉 Pedido Retirado", "Retirado com sucesso"),
+                        ]
+                    elif eh_motoboy_cli:
+                        etapas_info = [
+                            (1, "🕒 Pedido Recebido", "Aguardando Pagamento"),
+                            (2, "✅ Pago & Separado", "Preparando p/ Motoboy"),
+                            (3, "🛵 Saiu p/ Entrega", "Motoboy a caminho"),
+                            (4, "🎉 Pedido Entregue", "Concluído com sucesso"),
+                        ]
+                    else:
+                        etapas_info = [
+                            (1, "🕒 Pedido Recebido", "Aguardando Pagamento"),
+                            (2, "✅ Pago & Separado", "Nota e preparação"),
+                            (3, "🚚 Em Transporte", "Enviado à transportadora"),
+                            (4, "🎉 Pedido Entregue", "Concluído com sucesso"),
+                        ]
                     cols_tl = st.columns(4)
                     for idx_tl, (num_e, tit_e, sub_e) in enumerate(etapas_info):
                         concluido_tl = etapa_atual >= num_e
@@ -8493,21 +8747,42 @@ elif aba_loja == "pedidos":
                                 unsafe_allow_html=True,
                             )
 
-                # BLOCO DE RASTREAMENTO DA ENTREGA
+                # BLOCO DE RASTREAMENTO OU INSTRUÇÕES DE RETIRADA
                 with st.container(border=True):
                     cr_1, cr_2 = st.columns([2.8, 1.4])
+                    fisc_cd_cli = st.session_state.get("dados_fiscais_loja", {})
+                    end_retirada_cd = f"{fisc_cd_cli.get('rua_origem', 'Av. Djalma Batista')}, {fisc_cd_cli.get('numero_origem', '1000')} - {fisc_cd_cli.get('bairro_origem', 'Chapada')}, {fisc_cd_cli.get('cidade_origem', 'Manaus')}/{fisc_cd_cli.get('estado_origem', 'AM')}"
                     with cr_1:
-                        if cod_rastreio_c:
-                            st.markdown(f"🚚 **Código de Rastreio Oficial:** `{cod_rastreio_c}`")
-                            st.caption("Copie o código acima ou clique ao lado para acompanhar a movimentação da sua encomenda.")
-                        elif st_p == "pendente":
-                            st.markdown("⏳ **Status do Rastreio:** Aguardando confirmação do pagamento no Mercado Pago para iniciar a separação e envio.")
-                        elif st_p == "pago":
-                            st.markdown("📦 **Status do Rastreio:** Pagamento confirmado! Seu pedido está sendo embalado no Centro de Distribuição e o código de rastreio será exibido aqui assim que despachado.")
+                        if eh_retirada_cli:
+                            if st_p == "pendente":
+                                st.markdown("⏳ **Status da Retirada:** Aguardando confirmação do pagamento no Mercado Pago para separar seu pedido no Centro de Distribuição.")
+                            elif st_p == "pago":
+                                st.markdown(f"📦 **Status da Retirada:** Pagamento confirmado! Estamos separando seu pedido no Centro de Distribuição (**{end_retirada_cd}**).")
+                            elif st_p in ("pronto_retirada", "enviado"):
+                                st.markdown(f"🏢 **PRONTO PARA RETIRADA!** Seu pedido já está disponível para retirada em: **{end_retirada_cd}**.")
+                                if cod_rastreio_c:
+                                    st.caption(f"📍 Observação da Loja: **{cod_rastreio_c}**")
+                            else:
+                                st.markdown("🎉 **Status da Retirada:** Pedido retirado com sucesso pelo cliente!")
                         else:
-                            st.markdown("🚚 **Status do Rastreio:** Pedido em rota de entrega.")
+                            if cod_rastreio_c:
+                                st.markdown(f"🚚 **Código de Rastreio / Info de Entrega:** `{cod_rastreio_c}`")
+                                st.caption("Copie o código acima ou clique ao lado para acompanhar a movimentação da sua encomenda.")
+                            elif st_p == "pendente":
+                                st.markdown("⏳ **Status do Rastreio:** Aguardando confirmação do pagamento no Mercado Pago para iniciar a separação e envio.")
+                            elif st_p == "pago":
+                                st.markdown("📦 **Status do Rastreio:** Pagamento confirmado! Seu pedido está sendo embalado no Centro de Distribuição e o código de rastreio será exibido aqui assim que despachado.")
+                            else:
+                                st.markdown("🚚 **Status do Rastreio:** Pedido em rota de entrega.")
                     with cr_2:
-                        if cod_rastreio_c:
+                        if eh_retirada_cli:
+                            msg_duvida_ret = f"Olá! Gostaria de informações sobre a retirada/entrega do meu Pedido #{ped_c['id']}."
+                            st.link_button(
+                                "💬 Falar c/ Loja (Retirada ou Pedir Entrega)",
+                                f"https://wa.me/55{whats_num_clean}?text={urllib.parse.quote(msg_duvida_ret)}",
+                                use_container_width=True,
+                            )
+                        elif cod_rastreio_c and not eh_motoboy_cli:
                             st.link_button(
                                 "🔍 Rastrear nos Correios / Transp.",
                                 f"https://rastreamento.correios.com.br/app/index.php?objetos={urllib.parse.quote(cod_rastreio_c)}",
@@ -8586,7 +8861,7 @@ elif aba_loja == "pedidos":
 elif aba_loja == "suporte":
     st.markdown('<div class="section-title">🎧 Central de Suporte & Atendimento ao Cliente</div>', unsafe_allow_html=True)
 
-    col_sup1, col_sup2 = st.columns([1.4, 1.6])
+    col_sup1, col_sup2 = st.columns([1.15, 1.45])
 
     with col_sup1:
         with st.container(border=True):
@@ -8671,7 +8946,7 @@ elif aba_loja == "suporte":
                     "Motivo do Contato *",
                     [
                         "🚚 Dúvida sobre Rastreio / Prazo de Entrega",
-                        "💳 Confirmação de Pagamento Pix",
+                        "💳 Confirmação de Pagamento Mercado Pago / Pix",
                         "🎓 Acesso ao Curso / Emissão de Certificado",
                         "🔄 Troca, Garantia ou Suporte Técnico",
                         "💬 Outras Dúvidas ou Solicitações",
@@ -8790,10 +9065,10 @@ else:
         for idx_b, b_item in enumerate(banners_ativos_vitrine):
             tit_b = html.escape(str(b_item.get("titulo") or "Oferta Especial"), quote=True)
             sub_b = html.escape(str(b_item.get("subtitulo") or ""), quote=True)
-            bdg_b = html.escape(str(b_item.get("badge") or "🔥 DESTAQUE"), quote=True)
+            bdg_b = html.escape(str(b_item.get("badge") or b_item.get("tag") or "🔥 DESTAQUE"), quote=True)
             img_b = html.escape(str(b_item.get("imagem_url") or ""), quote=True)
-            cta_t = html.escape(str(b_item.get("cta_texto") or ""), quote=True)
-            cta_u = html.escape(str(b_item.get("cta_url") or ""), quote=True)
+            cta_t = html.escape(str(b_item.get("cta_texto") or b_item.get("texto_botao") or ""), quote=True)
+            cta_u = html.escape(str(b_item.get("cta_url") or b_item.get("link_destino") or ""), quote=True)
             cls_active = " active" if idx_b == 0 else ""
 
             cta_btn_html = ""
@@ -8812,8 +9087,8 @@ else:
                 f'    <div class="car-footer-row">'
                 f'      {cta_btn_html}'
                 f'      <span class="car-chip">&#9889; Pix Imediato</span>'
-                f'      <span class="car-chip">&#128154; Ton at&eacute; 12x</span>'
-                f'      <span class="car-chip">&#128153; Mercado Pago</span>'
+                f'      <span class="car-chip">&#128179; Cart&atilde;o at&eacute; 12x</span>'
+                f'      <span class="car-chip">&#128153; Mercado Pago Oficial</span>'
                 f'    </div>'
                 f'  </div>'
                 f'</div>'
