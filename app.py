@@ -417,12 +417,43 @@ st.markdown(
         color: #0F172A !important;
     }
 
-    /* 7. Rótulos (Labels), Abas (st.tabs), Alertas (st.success/info/warning/error), Expanders, Upload e Modais (st.dialog) */
+    /* 7. Rótulos (Labels), Captions, Inline Code (`...`), Popovers, Abas (st.tabs), Alertas, Expanders, Upload e Modais */
     [data-testid="stWidgetLabel"] p,
     [data-testid="stWidgetLabel"] span,
     [data-testid="stCaptionContainer"],
-    [data-testid="stCaptionContainer"] p {
+    [data-testid="stCaptionContainer"] p,
+    [data-testid="stCaptionContainer"] span {
         color: #475569 !important;
+        opacity: 1 !important;
+    }
+
+    /* Inline Code (`texto`) em Tema Claro Suave (corrige fundo preto nas tags de WhatsApp/E-mail/CPF/Frete em Pedidos) */
+    [data-testid="stMarkdownContainer"] p code,
+    [data-testid="stMarkdownContainer"] li code,
+    [data-testid="stMarkdownContainer"] span code,
+    [data-testid="stCaptionContainer"] code {
+        background-color: #F1F5F9 !important;
+        color: #0F172A !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 6px !important;
+        padding: 2px 7px !important;
+        font-weight: 600 !important;
+        font-size: 0.84em !important;
+    }
+
+    /* Popovers (st.popover — Editar Pedido, Excluir, 2ª Via Pagamento) em Tema Claro */
+    [data-testid="stPopoverBody"],
+    [data-baseweb="popover"] > div {
+        background: #FFFFFF !important;
+        background-color: #FFFFFF !important;
+        color: #0F172A !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 12px !important;
+    }
+    [data-testid="stPopoverBody"] p,
+    [data-testid="stPopoverBody"] span,
+    [data-testid="stPopoverBody"] label {
+        color: #0F172A !important;
     }
 
     /* Abas (st.tabs — tanto React Aria stTab quanto BaseWeb role="tab") */
@@ -3545,10 +3576,13 @@ if modo_admin_ativo:
 
                         info_prod_cat = mapa_prods_bi.get(pid_it)
                         if info_prod_cat:
-                            custo_unit_it = float(it_b.get("preco_custo") or info_prod_cat["preco_custo"] or 0.0)
+                            # Prioriza o custo atualizado do cadastro do produto (ou o custo específico gravado no pedido)
+                            custo_unit_it = float(info_prod_cat["preco_custo"] or it_b.get("preco_custo") or 0.0)
+                            if it_b.get("custo_manual_pedido") is not None:
+                                custo_unit_it = float(it_b.get("custo_manual_pedido") or 0.0)
                             dep_nome_it = info_prod_cat["departamento"]
                         else:
-                            custo_unit_it = float(it_b.get("preco_custo") or 0.0)
+                            custo_unit_it = float(it_b.get("custo_manual_pedido") if it_b.get("custo_manual_pedido") is not None else (it_b.get("preco_custo") or 0.0))
                             dep_nome_it = "Outros / Excluídos"
                             if pid_it is not None and pid_it not in mapa_prods_bi:
                                 mapa_prods_bi[pid_it] = {
@@ -3645,7 +3679,62 @@ if modo_admin_ativo:
                 st.write("")
 
                 # -----------------------------------------------------------------
-                # BLOCO 2: VENDAS POR FORMA DE PAGAMENTO (PIX, TON E MERCADO PAGO)
+                # BLOCO 1.5: EDITOR RÁPIDO DE CUSTOS OPCIONAIS PARA CALCULAR LUCRO REAL
+                # -----------------------------------------------------------------
+                with st.expander("💰 Informar / Atualizar Custos dos Produtos (Opcional — Para Calcular Seu Lucro Líquido Real)", expanded=(custo_estoque_total == 0 and len(prods_bi) > 0)):
+                    st.caption("O preenchimento do custo é **100% opcional**. Se você informar quanto cada produto custa para você (fornecedor + embalagem/taxas), o painel calcula automaticamente seu **Lucro Líquido Real** e sua **Margem (%)** em todas as vendas (inclusive nos pedidos já realizados):")
+                    if not prods_bi:
+                        st.info("Cadastre seu primeiro produto para informar custos.")
+                    else:
+                        with st.form("form_edicao_rapida_custos_bi"):
+                            novos_custos_bi = {}
+                            cols_cst_hdr = st.columns([2.8, 1.2, 1.3, 1.5])
+                            cols_cst_hdr[0].markdown("**Produto**")
+                            cols_cst_hdr[1].markdown("**Preço Venda**")
+                            cols_cst_hdr[2].markdown("**Seu Custo (R$ - Opc.)**")
+                            cols_cst_hdr[3].markdown("**Lucro Real / Un.**")
+                            for pr_c_item in prods_bi:
+                                pid_c_it = pr_c_item["id"]
+                                info_c_it = obter_links_pagamento_produto(pr_c_item)
+                                pv_c_it = float(pr_c_item.get("preco_venda") or 0.0)
+                                cst_c_atual = float(info_c_it.get("preco_custo") or 0.0)
+                                luc_c_atual = pv_c_it - cst_c_atual
+                                mrg_c_atual = (luc_c_atual / pv_c_it * 100.0) if pv_c_it > 0 else 0.0
+                                cc_1, cc_2, cc_3, cc_4 = st.columns([2.8, 1.2, 1.3, 1.5], vertical_alignment="center")
+                                cc_1.markdown(f"**#{pid_c_it}** — {pr_c_item.get('titulo', 'Produto')}")
+                                cc_2.markdown(f"R$ {pv_c_it:.2f}")
+                                novos_custos_bi[pid_c_it] = (
+                                    cc_3.number_input(
+                                        f"Custo #{pid_c_it}",
+                                        min_value=0.0,
+                                        value=cst_c_atual,
+                                        step=1.0,
+                                        key=f"bi_fast_cst_{pid_c_it}",
+                                        label_visibility="collapsed",
+                                    ),
+                                    info_c_it,
+                                )
+                                cor_l_bi = "#047857" if luc_c_atual > 0 else "#DC2626"
+                                cc_4.markdown(
+                                    f"<span style='color:{cor_l_bi}; font-weight:800;'>R$ {luc_c_atual:.2f}</span> "
+                                    f"<span style='font-size:0.76rem; color:#475569;'>({mrg_c_atual:.0f}% margem)</span>",
+                                    unsafe_allow_html=True,
+                                )
+                            if st.form_submit_button("💾 Salvar Custos e Recalcular Lucro Real Agora", type="primary", use_container_width=True):
+                                for pid_sv_b, (val_cst_b, inf_b) in novos_custos_bi.items():
+                                    salvar_links_pagamento_produto(
+                                        pid_sv_b,
+                                        inf_b.get("link_ton_produto", ""),
+                                        inf_b.get("link_mp_produto", ""),
+                                        inf_b.get("frete_gratis_produto", False),
+                                        float(val_cst_b),
+                                        ativo=inf_b.get("ativo", True),
+                                    )
+                                st.success("✅ Custos atualizados com sucesso! O Lucro Líquido Real de todos os pedidos já foi recalculado.")
+                                st.rerun()
+
+                # -----------------------------------------------------------------
+                # BLOCO 2: VENDAS POR FORMA DE PAGAMENTO
                 # -----------------------------------------------------------------
                 with st.container(border=True):
                     st.markdown('<div class="nuvem-card-title">💳 Receita por Forma de Pagamento (Pix vs. Ton vs. Mercado Pago)</div>', unsafe_allow_html=True)
@@ -4310,15 +4399,20 @@ if modo_admin_ativo:
                     )
 
                 with st.container(border=True):
-                    st.markdown('<div class="nuvem-card-title">💰 4. Preço de Custo, Preço de Venda ("De/Por"), Estoque, Frete e Destaque</div>', unsafe_allow_html=True)
-                    col_p_custo, col_p0, col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns([1.15, 1.15, 1.15, 0.9, 0.9, 0.9, 0.95])
-                    preco_custo_in = col_p_custo.number_input("Preço de Custo (R$)", min_value=0.0, value=0.0, step=1.0, help="Quanto este produto custa para você (usado no cálculo de Lucro Líquido do Painel)")
+                    st.markdown('<div class="nuvem-card-title">💰 4. Preço de Venda, Custos do Produto (Opcional p/ Ver Lucro Real), Estoque e Destaque</div>', unsafe_allow_html=True)
+                    st.caption("💡 **Custo Opcional:** Informe quanto o produto custa para você (e eventual custo extra com embalagem/taxa) se quiser acompanhar seu **Lucro Líquido Real** no painel financeiro. Se não quiser usar agora, basta deixar em `0.00`.")
+                    col_p_custo, col_p_extra, col_p0, col_p1, col_p2 = st.columns([1.15, 1.15, 1.15, 1.15, 0.9])
+                    preco_custo_base_in = col_p_custo.number_input("Custo do Produto (R$ opc.)", min_value=0.0, value=0.0, step=1.0, help="Opcional: Quanto o produto custa no fornecedor")
+                    preco_custo_extra_in = col_p_extra.number_input("Custo Extra/Taxa (R$ opc.)", min_value=0.0, value=0.0, step=0.5, help="Opcional: Embalagem, taxa ou despesa extra por unidade")
                     preco_orig_in = col_p0.number_input("Preço De (R$ opc.)", min_value=0.0, value=0.0, step=1.0, help="Se preenchido maior que o preço de venda, exibe desconto automático (% OFF)")
                     preco_in = col_p1.number_input("Preço Venda (R$) *", min_value=0.01, value=49.90, step=1.0)
                     estoque_in = col_p2.number_input("Estoque / Vagas", min_value=0, value=20, step=1)
-                    destaque_in = col_p3.checkbox("⭐ Destaque", value=False)
-                    frete_gratis_in = col_p4.checkbox("🎁 Frete Grátis", value=False)
-                    visivel_in = col_p5.checkbox("Visível na loja", value=True)
+                    preco_custo_in = float(preco_custo_base_in or 0.0) + float(preco_custo_extra_in or 0.0)
+
+                    col_p3, col_p4, col_p5 = st.columns(3)
+                    destaque_in = col_p3.checkbox("⭐ Produto em Destaque", value=False)
+                    frete_gratis_in = col_p4.checkbox("🎁 Frete Grátis neste Item", value=False)
+                    visivel_in = col_p5.checkbox("🟢 Visível na Loja Online", value=True)
 
                 col_b1, col_b2 = st.columns([3.8, 1.2])
                 if col_b2.form_submit_button("💾 Salvar produto", type="primary", width="stretch"):
@@ -4466,7 +4560,7 @@ if modo_admin_ativo:
                     badge_vid = " • 🎬 Vídeo ativo" if video_p_url else ""
                     c_info.caption(f"🖼️ {len(gal_p_all)} foto(s){badge_vid} • ⭐ {media_p_adm:.1f} ({qtd_av_adm} aval.)")
 
-                    nc_custo = c_custo.number_input("Custo (R$)", min_value=0.0, value=custo_prod_atual, step=1.0, key=f"lp_cst_{p['id']}", help="Preço de custo unitário para calcular seu lucro real")
+                    nc_custo = c_custo.number_input("Custo (R$ opc.)", min_value=0.0, value=custo_prod_atual, step=1.0, key=f"lp_cst_{p['id']}", help="Opcional: Preço de custo unitário para calcular seu Lucro Real")
                     np = c_pr.number_input("Venda (R$)", min_value=0.01, value=pv_prod_atual, step=1.0, key=f"lp_pr_{p['id']}")
                     ne = c_est.number_input("Estoque", min_value=0, value=int(p.get("estoque") or 0), step=1, key=f"lp_est_{p['id']}")
                     nv = c_vis.checkbox(
@@ -4478,19 +4572,17 @@ if modo_admin_ativo:
                         args=(p["id"], link_ton_atual, link_mp_atual, fg_prod_atual, custo_prod_atual),
                     )
 
-                    # Linha rápida de Links de Pagamento (Ton e Mercado Pago) direto no card do produto!
-                    c_q_ton, c_q_mp = st.columns(2)
-                    q_link_ton = c_q_ton.text_input(
-                        "💚 Link de Pagamento TON deste Produto (troque aqui quando mudar o preço — vazio usa Global)",
-                        value=link_ton_atual,
-                        placeholder="Cole aqui o link gerado no app da Ton (ex: https://pay.ton.com.br/...)",
-                        key=f"lp_q_ton_{p['id']}",
-                    )
-                    q_link_mp = c_q_mp.text_input(
-                        "💙 Link de Pagamento MERCADO PAGO deste Produto (opcional — vazio usa Global / API)",
-                        value=link_mp_atual,
-                        placeholder="Cole aqui o link do Mercado Pago (ex: https://mpago.la/...)",
-                        key=f"lp_q_mp_{p['id']}",
+                    lucro_sim_card = float(np) - float(nc_custo)
+                    margem_sim_card = (lucro_sim_card / float(np) * 100.0) if float(np) > 0 else 0.0
+                    lucro_est_sim = lucro_sim_card * int(ne)
+                    q_link_ton = link_ton_atual
+                    q_link_mp = link_mp_atual
+                    st.markdown(
+                        f"<div style='background:#F8FAFC; border:1px solid #CBD5E1; border-radius:8px; padding:7px 12px; margin-top:4px; font-size:0.8rem; color:#0F172A; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;'>"
+                        f"<span>💰 <b>Custo Unitário (Opcional):</b> R$ {float(nc_custo):.2f} &nbsp;|&nbsp; 🏷️ <b>Preço de Venda:</b> R$ {float(np):.2f}</span>"
+                        f"<span style='color:#047857; font-weight:800;'>📈 Lucro Líquido Real: R$ {lucro_sim_card:.2f}/un ({margem_sim_card:.1f}%) &nbsp;•&nbsp; Lucro Potencial do Estoque: R$ {lucro_est_sim:.2f}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
                     )
 
                     if c_act.button("Salvar Rápido", key=f"lp_save_{p['id']}", type="primary", width="stretch"):
@@ -4499,7 +4591,7 @@ if modo_admin_ativo:
                         except Exception:
                             pass
                         salvar_links_pagamento_produto(p["id"], q_link_ton, q_link_mp, fg_prod_atual, nc_custo, ativo=bool(nv))
-                        st.toast("✅ Custo, preço de venda, estoque, status ativo e links atualizados!")
+                        st.toast("✅ Custo, preço de venda, lucro real e estoque atualizados!")
                         st.rerun()
 
                     if c_act.button("📸 Fotos & Vídeo", key=f"lp_midia_{p['id']}", width="stretch"):
@@ -5739,14 +5831,52 @@ if modo_admin_ativo:
                 for p_v in peds_validos_v:
                     for it_v in (p_v.get("itens") or []):
                         if isinstance(it_v, dict):
-                            cst_it_v = float(it_v.get("preco_custo") or mapa_custos_v.get(it_v.get("id"), 0.0) or 0.0)
+                            if it_v.get("custo_manual_pedido") is not None:
+                                cst_it_v = float(it_v.get("custo_manual_pedido") or 0.0)
+                            else:
+                                cst_it_v = float(mapa_custos_v.get(it_v.get("id"), 0.0) or it_v.get("preco_custo") or 0.0)
                             custo_tot_v += cst_it_v * max(1, int(it_v.get("qtd") or 1))
                 lucro_tot_v = fat - custo_tot_v
-                m1.metric("Faturamento Bruto", f"R$ {fat:.2f}")
-                m2.metric("Lucro Líquido Real", f"R$ {lucro_tot_v:.2f}")
-                m3.metric("Total de Pedidos", len(lista_ped))
-                m4.metric("Aguardando Pagamento", len([p for p in lista_ped if p.get("status_pagamento") == "pendente"]))
-                st.divider()
+                margem_tot_v = (lucro_tot_v / fat * 100.0) if fat > 0 else 0.0
+                qtd_pendentes_v = len([p for p in lista_ped if p.get("status_pagamento") == "pendente"])
+
+                with m1:
+                    st.markdown(
+                        f"<div style='background:#FFFFFF; border:1px solid #BFDBFE; border-left:5px solid #2563EB; border-radius:12px; padding:14px 16px;'>"
+                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>💰 Faturamento Bruto</div>"
+                        f"<div style='font-size:1.55rem; font-weight:900; color:#0F172A; margin:3px 0;'>R$ {fat:.2f}</div>"
+                        f"<div style='font-size:0.75rem; color:#2563EB; font-weight:600;'>{len(peds_validos_v)} pedido(s) ativo(s)</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with m2:
+                    st.markdown(
+                        f"<div style='background:#FFFFFF; border:1px solid #6EE7B7; border-left:5px solid #059669; border-radius:12px; padding:14px 16px;'>"
+                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>📈 Lucro Líquido Real</div>"
+                        f"<div style='font-size:1.55rem; font-weight:900; color:#047857; margin:3px 0;'>R$ {lucro_tot_v:.2f}</div>"
+                        f"<div style='font-size:0.75rem; color:#059669; font-weight:700;'>Margem: {margem_tot_v:.1f}% • Custo: R$ {custo_tot_v:.2f}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with m3:
+                    st.markdown(
+                        f"<div style='background:#FFFFFF; border:1px solid #DDD6FE; border-left:5px solid #7C3AED; border-radius:12px; padding:14px 16px;'>"
+                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>📦 Total de Pedidos</div>"
+                        f"<div style='font-size:1.55rem; font-weight:900; color:#0F172A; margin:3px 0;'>{len(lista_ped)}</div>"
+                        f"<div style='font-size:0.75rem; color:#6D28D9; font-weight:600;'>Histórico completo no Supabase</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                with m4:
+                    st.markdown(
+                        f"<div style='background:#FFFFFF; border:1px solid #FDE68A; border-left:5px solid #D97706; border-radius:12px; padding:14px 16px;'>"
+                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>⏳ Aguardando Pagamento</div>"
+                        f"<div style='font-size:1.55rem; font-weight:900; color:#B45309; margin:3px 0;'>{qtd_pendentes_v}</div>"
+                        f"<div style='font-size:0.75rem; color:#D97706; font-weight:600;'>Sincronizado c/ Mercado Pago</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+                st.write("")
 
                 for ped in lista_ped:
                     with st.container(border=True):
@@ -5756,7 +5886,7 @@ if modo_admin_ativo:
                         rastreio_atual = obter_rastreio_pedido(ped)
                         itens_ped_l = ped.get("itens") or []
                         meta_ped = itens_ped_l[0] if (itens_ped_l and isinstance(itens_ped_l[0], dict)) else {}
-                        metodo_pg_ped = ped.get("metodo_pagamento") or meta_ped.get("metodo_pagamento") or "PIX"
+                        metodo_pg_ped = ped.get("metodo_pagamento") or meta_ped.get("metodo_pagamento") or "mercadopago"
                         mod_frete_ped = ped.get("modalidade_frete") or meta_ped.get("modalidade_frete") or "Padrão"
 
                         badge_color = {
@@ -5767,32 +5897,90 @@ if modo_admin_ativo:
                             "pendente": "#B45309",
                         }.get(st_atual, "#475569")
 
-                        cor_metodo = "#15803D" if "TON" in str(metodo_pg_ped).upper() else ("#1D4ED8" if "MERCADO" in str(metodo_pg_ped).upper() else "#B45309")
-                        badge_metodo = f"&nbsp;<span style='background:{cor_metodo}18; color:{cor_metodo}; border:1px solid {cor_metodo}55; padding:3px 9px; border-radius:12px; font-weight:700; font-size:0.75rem;'>💳 {metodo_pg_ped}</span>"
+                        cor_metodo = "#1D4ED8" if "MERCADO" in str(metodo_pg_ped).upper() else ("#15803D" if "TON" in str(metodo_pg_ped).upper() else "#047857")
+                        badge_metodo = f"&nbsp;<span style='background:{cor_metodo}15; color:{cor_metodo}; border:1px solid {cor_metodo}45; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.75rem;'>💳 {html.escape(str(metodo_pg_ped))}</span>"
 
-                        c1.markdown(f"### Pedido #{ped['id']} — {ped['cliente_nome']}")
+                        c1.markdown(
+                            f"<h3 style='margin:0 0 6px 0; font-size:1.22rem; font-weight:800; color:#0F172A;'>Pedido #{ped['id']} — {html.escape(str(ped.get('cliente_nome') or 'Cliente'))}</h3>",
+                            unsafe_allow_html=True,
+                        )
                         rastreio_badge = (
-                            f"&nbsp;<span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #93C5FD; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.78rem;'>🚚 Rastreio: {rastreio_atual}</span>"
+                            f"&nbsp;<span style='background:#EFF6FF; color:#1D4ED8; border:1px solid #93C5FD; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.76rem;'>🚚 Rastreio: {html.escape(str(rastreio_atual))}</span>"
                             if rastreio_atual
                             else ""
                         )
                         c1.markdown(
-                            f"<span style='background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}55; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.8rem; text-transform:uppercase;'>Status: {st_atual}</span>{badge_metodo}{rastreio_badge}",
+                            f"<div style='margin-bottom:10px;'>"
+                            f"<span style='background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}55; padding:3px 10px; border-radius:12px; font-weight:800; font-size:0.76rem; text-transform:uppercase;'>Status: {html.escape(str(st_atual))}</span>"
+                            f"{badge_metodo}{rastreio_badge}"
+                            f"</div>",
                             unsafe_allow_html=True,
                         )
-                        c1.write(f"📱 WhatsApp: `{ped['cliente_whatsapp']}` | ✉️ E-mail: `{ped.get('cliente_email') or '-'}` | 📄 CPF: `{ped['cliente_cpf']}`")
-                        c1.write(f"📍 Endereço: {ped['endereco_completo']} (CEP: {ped['cep']}) — **Frete:** `{mod_frete_ped}`")
+
+                        # Bloco de Contato e Entrega com CSS Limpo em Tema Claro (sem caixas pretas de code!)
+                        w_ped_esc = html.escape(str(ped.get("cliente_whatsapp") or "-"))
+                        em_ped_esc = html.escape(str(ped.get("cliente_email") or "-"))
+                        cpf_ped_esc = html.escape(str(ped.get("cliente_cpf") or "-"))
+                        end_ped_esc = html.escape(str(ped.get("endereco_completo") or "-"))
+                        cep_ped_esc = html.escape(str(ped.get("cep") or "-"))
+                        frt_ped_esc = html.escape(str(mod_frete_ped))
+
+                        c1.markdown(
+                            f"""
+                            <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:10px; padding:10px 12px; font-size:0.83rem; color:#1E293B; line-height:1.6;">
+                                <div style="display:flex; flex-wrap:wrap; gap:6px 10px; margin-bottom:6px;">
+                                    <span>📱 <b>WhatsApp:</b> <span style="background:#FFFFFF; color:#0F172A; border:1px solid #CBD5E1; padding:1px 7px; border-radius:6px; font-weight:700;">{w_ped_esc}</span></span>
+                                    <span>✉️ <b>E-mail:</b> <span style="background:#FFFFFF; color:#0F172A; border:1px solid #CBD5E1; padding:1px 7px; border-radius:6px; font-weight:600;">{em_ped_esc}</span></span>
+                                    <span>📄 <b>CPF/CNPJ:</b> <span style="background:#FFFFFF; color:#0F172A; border:1px solid #CBD5E1; padding:1px 7px; border-radius:6px; font-weight:600;">{cpf_ped_esc}</span></span>
+                                </div>
+                                <div style="border-top:1px dashed #CBD5E1; padding-top:6px; color:#334155;">
+                                    📍 <b>Endereço:</b> {end_ped_esc} <span style="color:#64748B;">(CEP: {cep_ped_esc})</span><br>
+                                    🚚 <b>Modalidade de Entrega:</b> <span style="background:#EFF6FF; color:#1D4ED8; border:1px solid #BFDBFE; padding:1px 8px; border-radius:6px; font-weight:700; font-size:0.79rem;">{frt_ped_esc}</span>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
                         custo_deste_ped = 0.0
+                        linhas_itens_ped_html = ""
                         for it_cp in itens_ped_l:
                             if isinstance(it_cp, dict):
-                                custo_deste_ped += float(it_cp.get("preco_custo") or mapa_custos_v.get(it_cp.get("id"), 0.0) or 0.0) * max(1, int(it_cp.get("qtd") or 1))
-                        lucro_deste_ped = float(ped["valor_total"]) - custo_deste_ped
+                                qtd_it_p = max(1, int(it_cp.get("qtd") or 1))
+                                if it_cp.get("custo_manual_pedido") is not None:
+                                    cst_u_p = float(it_cp.get("custo_manual_pedido") or 0.0)
+                                else:
+                                    cst_u_p = float(mapa_custos_v.get(it_cp.get("id"), 0.0) or it_cp.get("preco_custo") or 0.0)
+                                custo_deste_ped += cst_u_p * qtd_it_p
+                                tit_it_esc = html.escape(str(it_cp.get("titulo") or "Item"))
+                                pv_u_p = float(it_cp.get("preco_unit") or it_cp.get("preco_venda") or 0.0)
+                                txt_cst_item = f" <span style='color:#64748B; font-size:0.74rem;'>(Venda: R$ {pv_u_p:.2f} • Custo: R$ {cst_u_p:.2f})</span>" if pv_u_p > 0 else ""
+                                linhas_itens_ped_html += f"<div style='margin-top:4px; color:#0F172A; font-weight:600; font-size:0.82rem;'>• {qtd_it_p}x {tit_it_esc}{txt_cst_item}</div>"
 
-                        c2.markdown(f"💰 **Total: R$ {float(ped['valor_total']):.2f}** &nbsp;•&nbsp; :green[**Lucro: R$ {lucro_deste_ped:.2f}**]")
-                        c2.caption(f"Produtos: R$ {float(ped.get('valor_produtos', ped['valor_total'])):.2f} | Custo: R$ {custo_deste_ped:.2f} | Frete: R$ {float(ped.get('valor_frete', 0)):.2f} | Desc.: R$ {float(ped.get('valor_desconto', 0)):.2f}")
-                        for it in ped.get("itens", []):
-                            c2.caption(f"• {it.get('qtd', 1)}x {it.get('titulo', 'Item')}")
+                        val_tot_ped_f = float(ped.get("valor_total") or 0.0)
+                        lucro_deste_ped = val_tot_ped_f - custo_deste_ped
+                        margem_deste_ped = (lucro_deste_ped / val_tot_ped_f * 100.0) if val_tot_ped_f > 0 else 0.0
+
+                        c2.markdown(
+                            f"""
+                            <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:10px; padding:11px 13px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+                                    <span style="font-size:0.95rem; font-weight:800; color:#0F172A;">💰 Total: R$ {val_tot_ped_f:.2f}</span>
+                                    <span style="background:#ECFDF5; color:#047857; border:1px solid #6EE7B7; padding:2px 9px; border-radius:8px; font-size:0.86rem; font-weight:800;">
+                                        📈 Lucro Real: R$ {lucro_deste_ped:.2f} ({margem_deste_ped:.0f}%)
+                                    </span>
+                                </div>
+                                <div style="font-size:0.78rem; color:#475569; font-weight:600; border-bottom:1px solid #E2E8F0; padding-bottom:6px; margin-bottom:4px;">
+                                    Produtos: <b style="color:#0F172A;">R$ {float(ped.get('valor_produtos', val_tot_ped_f)):.2f}</b> &nbsp;|&nbsp;
+                                    Custo: <b style="color:#B45309;">R$ {custo_deste_ped:.2f}</b> &nbsp;|&nbsp;
+                                    Frete: <b style="color:#0F172A;">R$ {float(ped.get('valor_frete', 0)):.2f}</b> &nbsp;|&nbsp;
+                                    Desc.: <b style="color:#DC2626;">R$ {float(ped.get('valor_desconto', 0)):.2f}</b>
+                                </div>
+                                {linhas_itens_ped_html}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 
                         status_opcoes = ["pendente", "pago", "enviado", "entregue", "cancelado"]
                         idx_st = status_opcoes.index(st_atual) if st_atual in status_opcoes else 0
@@ -5853,18 +6041,26 @@ if modo_admin_ativo:
                                     ed_cep = col_ed5.text_input("CEP", value=ped.get("cep", ""))
                                     ed_end = col_ed6.text_input("Endereço Completo", value=ped.get("endereco_completo", ""))
 
-                                    col_v1, col_v2, col_v3 = st.columns(3)
+                                    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
                                     ed_prods = col_v1.number_input("Produtos (R$)", value=float(ped.get("valor_produtos", ped["valor_total"])), step=10.0)
-                                    ed_frete = col_v2.number_input("Frete (R$)", value=float(ped.get("valor_frete", 0.0)), step=5.0)
-                                    ed_desc = col_v3.number_input("Desconto (R$)", value=float(ped.get("valor_desconto", 0.0)), step=5.0)
+                                    ed_custo_ped = col_v2.number_input("Custo (R$ opc.)", min_value=0.0, value=float(custo_deste_ped), step=1.0, help="Opcional: Custo total dos itens deste pedido para calcular o Lucro Real")
+                                    ed_frete = col_v3.number_input("Frete (R$)", value=float(ped.get("valor_frete", 0.0)), step=5.0)
+                                    ed_desc = col_v4.number_input("Desconto (R$)", value=float(ped.get("valor_desconto", 0.0)), step=5.0)
 
                                     ed_total = max(0.0, float(ed_prods) + float(ed_frete) - float(ed_desc))
-                                    st.write(f"💵 **Novo Valor Total Calculado: R$ {ed_total:.2f}**")
+                                    ed_lucro_real = ed_total - float(ed_custo_ped)
+                                    st.write(f"💵 **Valor Total: R$ {ed_total:.2f}** &nbsp;|&nbsp; 📈 **Lucro Real Calculado: :green[R$ {ed_lucro_real:.2f}]**")
 
                                     btn_salvar_ed = st.form_submit_button("💾 Salvar Alterações e Notificar Cliente", type="primary", use_container_width=True)
                                     if btn_salvar_ed:
                                         try:
                                             salvar_rastreio_no_pedido(ped, ed_rastreio, novo_status=ed_status)
+                                            itens_up_ed = [dict(it_x) for it_x in (ped.get("itens") or []) if isinstance(it_x, dict)]
+                                            if itens_up_ed:
+                                                qtd_primeiro = max(1, int(itens_up_ed[0].get("qtd") or 1))
+                                                itens_up_ed[0]["custo_manual_pedido"] = round(float(ed_custo_ped) / qtd_primeiro, 2)
+                                                for it_rest in itens_up_ed[1:]:
+                                                    it_rest["custo_manual_pedido"] = 0.0
                                             supabase.table("pedidos").update({
                                                 "status_pagamento": ed_status,
                                                 "cliente_nome": ed_nome,
@@ -5877,6 +6073,7 @@ if modo_admin_ativo:
                                                 "valor_frete": float(ed_frete),
                                                 "valor_desconto": float(ed_desc),
                                                 "valor_total": float(ed_total),
+                                                "itens": itens_up_ed if itens_up_ed else ped.get("itens"),
                                             }).eq("id", ped["id"]).execute()
                                             ped_atualizado = dict(ped, cliente_nome=ed_nome, cliente_whatsapp=ed_whats, cliente_email=ed_email, valor_total=ed_total)
                                             _, log_not_ed, url_w_ed = enviar_notificacao_status_cliente(ped_atualizado, ed_status, ed_rastreio)
@@ -6438,7 +6635,7 @@ if modo_admin_ativo:
 cfg_loja = st.session_state.get("config_loja", {})
 whats_num_clean = re.sub(r"\D", "", WHATSAPP_LOJA)
 
-# Detector Automático de Retorno do Checkout Pro do Mercado Pago
+# Detector Automático e Seguro de Retorno do Checkout Pro do Mercado Pago (Valida sempre na API Oficial!)
 mp_ret_param = st.query_params.get("mp_retorno") or st.query_params.get("collection_status") or st.query_params.get("status")
 mp_ped_param = st.query_params.get("pedido_id") or str(st.query_params.get("external_reference") or "").replace("PED_", "")
 mp_pay_param = st.query_params.get("payment_id") or st.query_params.get("collection_id") or ""
@@ -6446,10 +6643,15 @@ if (mp_ret_param or mp_pay_param) and mp_ped_param:
     _res_mp_ret = verificar_pagamento_mercadopago_pedido(mp_ped_param, str(mp_pay_param))
     aprov_mp_ret = bool(_res_mp_ret.get("aprovado"))
     msg_mp_ret = str(_res_mp_ret.get("mensagem") or "")
-    if aprov_mp_ret or str(mp_ret_param).lower() in ("sucesso", "approved"):
+    if aprov_mp_ret:
+        st.session_state["pedido_concluido"] = False
         st.session_state["_aviso_mp_retorno"] = ("success", msg_mp_ret)
+        st.session_state["_pedido_confirmado_festa"] = {
+            "id": mp_ped_param,
+            "mensagem_mp": msg_mp_ret,
+        }
         st.session_state["aba_loja_cliente"] = "pedidos"
-    elif str(mp_ret_param).lower() in ("pendente", "pending", "in_process"):
+    else:
         st.session_state["_aviso_mp_retorno"] = ("warning", msg_mp_ret)
         st.session_state["aba_loja_cliente"] = "pedidos"
     for _qp_k in ("mp_retorno", "pedido_id", "collection_id", "collection_status", "payment_id", "status", "external_reference", "payment_type", "merchant_order_id", "preference_id"):
@@ -8002,6 +8204,40 @@ elif aba_loja == "carrinho":
                 qr_b64_mp = det.get("pix_mp_qr_base64") or ""
                 pay_id_mp = det.get("pix_mp_payment_id") or ""
 
+                # Monitor em Tempo Real (a cada 5s): verifica na API Oficial do Mercado Pago e sai da tela de pagamento sozinho ao aprovar!
+                @st.fragment(run_every=5)
+                def _monitor_pagamento_tempo_real_mp():
+                    if not obter_token_mercadopago_ativo():
+                        return
+                    _res_auto = verificar_pagamento_mercadopago_pedido(det["id"], pay_id_mp)
+                    if _res_auto.get("aprovado"):
+                        st.session_state["pedido_concluido"] = False
+                        st.session_state["_pedido_confirmado_festa"] = {
+                            "id": det["id"],
+                            "total": det.get("total", 0.0),
+                            "titulo": det.get("titulo", ""),
+                            "cliente_nome": det.get("cliente_nome", "Cliente"),
+                            "modalidade_frete": det.get("modalidade_frete", "Padrão"),
+                            "endereco": det.get("endereco", ""),
+                            "mensagem_mp": _res_auto.get("mensagem", "Pagamento aprovado com sucesso!"),
+                        }
+                        st.session_state["_aviso_mp_retorno"] = ("success", _res_auto.get("mensagem", "Pagamento confirmado!"))
+                        ir_para_aba_loja("pedidos")
+                        st.rerun(scope="app")
+                    else:
+                        _hr_chk = datetime.now().strftime("%H:%M:%S")
+                        st.markdown(
+                            f"""
+                            <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:6px; background:#EFF6FF; border:1px solid #93C5FD; border-radius:10px; padding:9px 14px; margin-bottom:14px; font-size:0.82rem; color:#1E3A8A;">
+                                <span>🔄 <b>Monitoramento Automático Ativo:</b> Assim que o pagamento for confirmado pelo Mercado Pago (via QR Code Pix ou Checkout), esta página atualizará e avançará sozinha!</span>
+                                <span style="font-size:0.74rem; color:#2563EB; font-weight:800; background:#DBEAFE; padding:2px 8px; border-radius:6px;">Verificado às {_hr_chk}</span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+                _monitor_pagamento_tempo_real_mp()
+
                 c_mp1, c_mp2 = st.columns([1.45, 1.55])
                 with c_mp1:
                     st.markdown("#### ⚡ Opção 1: Pagar com Pix Agora (Direto na Tela)")
@@ -8052,8 +8288,19 @@ elif aba_loja == "carrinho":
                         with st.spinner("Consultando aprovação em tempo real no Mercado Pago..."):
                             _chk_pos = verificar_pagamento_mercadopago_pedido(det["id"], pay_id_mp)
                         if _chk_pos.get("aprovado"):
-                            st.success(f"🎉 {_chk_pos['mensagem']}")
-                            st.balloons()
+                            st.session_state["pedido_concluido"] = False
+                            st.session_state["_pedido_confirmado_festa"] = {
+                                "id": det["id"],
+                                "total": det.get("total", 0.0),
+                                "titulo": det.get("titulo", ""),
+                                "cliente_nome": det.get("cliente_nome", "Cliente"),
+                                "modalidade_frete": det.get("modalidade_frete", "Padrão"),
+                                "endereco": det.get("endereco", ""),
+                                "mensagem_mp": _chk_pos.get("mensagem", "Pagamento aprovado com sucesso!"),
+                            }
+                            st.session_state["_aviso_mp_retorno"] = ("success", _chk_pos["mensagem"])
+                            ir_para_aba_loja("pedidos")
+                            st.rerun()
                         else:
                             st.warning(_chk_pos.get("mensagem", "Pagamento ainda não consta como aprovado."))
 
@@ -8091,8 +8338,43 @@ elif aba_loja == "carrinho":
 elif aba_loja == "pedidos":
     st.markdown('<div class="section-title">📦 Meus Pedidos, Status & Rastreamento</div>', unsafe_allow_html=True)
 
+    _festa_mp = st.session_state.pop("_pedido_confirmado_festa", None)
     _aviso_mp = st.session_state.pop("_aviso_mp_retorno", None)
-    if _aviso_mp:
+    if _festa_mp:
+        st.balloons()
+        _id_f = _festa_mp.get("id", "")
+        _msg_f = _festa_mp.get("mensagem_mp") or f"Pagamento do Pedido #{_id_f} aprovado com sucesso no Mercado Pago!"
+        _msg_w_pago = (
+            f"✅ *PAGAMENTO CONFIRMADO — PEDIDO #{_id_f}*\n\n"
+            f"Olá equipe *{cfg_loja.get('nome_loja', 'Tags Informática')}*! Meu pagamento do *Pedido #{_id_f}* já foi *APROVADO* automaticamente pelo Mercado Pago!\n"
+            f"Podem iniciar a separação e envio do meu pedido. Obrigado!"
+        )
+        _url_w_pago = f"https://wa.me/55{whats_num_clean}?text={urllib.parse.quote(_msg_w_pago)}"
+        st.markdown(
+            f"""
+            <div style="background:linear-gradient(135deg, #ECFDF5 0%, #D1FAE5 100%); border:2px solid #10B981; border-radius:16px; padding:22px 24px; margin-bottom:18px; box-shadow:0 10px 25px rgba(16,185,129,0.15);">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                    <span style="font-size:1.8rem;">🎉</span>
+                    <div>
+                        <div style="font-size:1.22rem; font-weight:900; color:#065F46;">
+                            PAGAMENTO CONFIRMADO COM SUCESSO! (Pedido #{_id_f})
+                        </div>
+                        <div style="font-size:0.88rem; color:#047857; font-weight:700;">
+                            {_msg_f}
+                        </div>
+                    </div>
+                </div>
+                <div style="font-size:0.86rem; color:#0F172A; margin-bottom:14px; line-height:1.5;">
+                    Seu pedido já mudou automaticamente para o status <b>✅ PAGO & SEPARADO</b> em nosso sistema e você saiu da tela de cobrança! Abaixo você pode acompanhar a linha do tempo da entrega e emitir seu recibo DANFE:
+                </div>
+                <a href="{_url_w_pago}" target="_blank" class="btn-whats-pay" style="margin:0; display:inline-block; width:auto; padding:10px 20px;">
+                    📲 Avisar no WhatsApp da Loja que Já Está Pago (#{_id_f})
+                </a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    elif _aviso_mp:
         _tp_av, _msg_av = _aviso_mp
         if _tp_av in ("success", "sucesso"):
             st.success(f"🎉 **Retorno Mercado Pago:** {_msg_av}")
