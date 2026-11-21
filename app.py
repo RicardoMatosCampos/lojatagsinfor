@@ -1950,6 +1950,7 @@ def gerar_link_checkout_mercadopago(
     token_mp = obter_token_mercadopago_ativo()
     link_padrao_mp = (cfg_p.get("mp_link_padrao") or "").strip()
     url_retorno_loja = (cfg_p.get("mp_url_retorno") or "https://lojatagsinfor.streamlit.app").strip().rstrip("/")
+    max_parcelas_mp = max(1, min(18, int(cfg_p.get("ton_max_parcelas") or 12)))
 
     if token_mp:
         try:
@@ -1969,6 +1970,11 @@ def gerar_link_checkout_mercadopago(
                         "unit_price": round(max(0.50, float(valor_total)), 2),
                     }
                 ],
+                "payment_methods": {
+                    "excluded_payment_methods": [],
+                    "excluded_payment_types": [],
+                    "installments": max_parcelas_mp,
+                },
                 "external_reference": f"PED_{pedido_id}",
                 "statement_descriptor": "TAGSINFOR",
                 "back_urls": {
@@ -1982,7 +1988,10 @@ def gerar_link_checkout_mercadopago(
             if email_cliente and "@" in email_cliente:
                 payer_info["email"] = email_cliente.strip()
             if nome_cliente and nome_cliente.strip():
-                payer_info["name"] = nome_cliente.strip()
+                partes_nm = nome_cliente.strip().split()
+                payer_info["name"] = partes_nm[0]
+                if len(partes_nm) > 1:
+                    payer_info["surname"] = " ".join(partes_nm[1:])
             cpf_limpo = re.sub(r"\D", "", str(cpf_cliente or ""))
             if len(cpf_limpo) in (11, 14):
                 payer_info["identification"] = {
@@ -2007,16 +2016,102 @@ def gerar_link_checkout_mercadopago(
     return link_padrao_mp
 
 
-def verificar_pagamento_mercadopago_pedido(pedido_id, payment_id_direto: str = "") -> tuple:
+def gerar_pix_direto_mercadopago(
+    titulo_pedido: str,
+    valor_total: float,
+    pedido_id,
+    email_cliente: str = "",
+    nome_cliente: str = "",
+    cpf_cliente: str = "",
+) -> dict:
+    """
+    Gera um QR Code Pix Dinâmico e Código Pix Copia e Cola DIRETAMENTE pela API Oficial
+    de Pagamentos do Mercado Pago (`POST /v1/payments` com `payment_method_id = "pix"`).
+    O pagamento cai na hora na conta Mercado Pago do lojista e permite baixa automática por ID!
+    """
+    token_mp = obter_token_mercadopago_ativo()
+    if not token_mp:
+        return {"sucesso": False, "erro_mp": "Access Token não configurado."}
+
+    try:
+        partes_nome = (nome_cliente or "Cliente TagsInfor").strip().split()
+        primeiro_nome = partes_nome[0] if partes_nome else "Cliente"
+        sobrenome = " ".join(partes_nome[1:]) if len(partes_nome) > 1 else "Loja"
+        email_pagador = (email_cliente or "").strip().lower()
+        if "@" not in email_pagador:
+            email_pagador = "cliente@tagsinfor.com.br"
+
+        cpf_limpo = re.sub(r"\D", "", str(cpf_cliente or ""))
+        payer_obj = {
+            "email": email_pagador,
+            "first_name": primeiro_nome,
+            "last_name": sobrenome,
+        }
+        if len(cpf_limpo) in (11, 14):
+            payer_obj["identification"] = {
+                "type": "CPF" if len(cpf_limpo) == 11 else "CNPJ",
+                "number": cpf_limpo,
+            }
+
+        chave_idemp = f"mp_pix_ped_{pedido_id}_{int(round(float(valor_total) * 100))}_{uuid.uuid4().hex[:8]}"
+        headers = {
+            "Authorization": f"Bearer {token_mp}",
+            "Content-Type": "application/json",
+            "X-Idempotency-Key": chave_idemp,
+        }
+        payload_pix = {
+            "transaction_amount": round(max(0.50, float(valor_total)), 2),
+            "description": f"Pedido #{pedido_id} - {titulo_pedido}"[:240],
+            "payment_method_id": "pix",
+            "external_reference": f"PED_{pedido_id}",
+            "payer": payer_obj,
+        }
+        r_pix = requests.post(
+            "https://api.mercadopago.com/v1/payments",
+            headers=headers,
+            json=payload_pix,
+            timeout=8,
+        )
+        dados_resp = r_pix.json() if r_pix.content else {}
+        if r_pix.status_code in (200, 201):
+            poi = dados_resp.get("point_of_interaction") or {}
+            tx_data = poi.get("transaction_data") or {}
+            qr_str = tx_data.get("qr_code") or ""
+            qr_b64 = tx_data.get("qr_code_base64") or ""
+            if qr_str:
+                return {
+                    "sucesso": True,
+                    "payment_id": str(dados_resp.get("id") or ""),
+                    "qr_code": qr_str,
+                    "qr_code_base64": qr_b64,
+                    "ticket_url": tx_data.get("ticket_url") or "",
+                    "erro_mp": "",
+                }
+        msg_err_api = dados_resp.get("message") or str(dados_resp)
+        causas = dados_resp.get("cause") or []
+        if isinstance(causas, list) and causas:
+            desc_c = causas[0].get("description") or causas[0].get("code") or ""
+            if desc_c:
+                msg_err_api = f"{msg_err_api} ({desc_c})"
+        return {"sucesso": False, "erro_mp": str(msg_err_api)}
+    except Exception as e_px:
+        return {"sucesso": False, "erro_mp": str(e_px)}
+
+
+def verificar_pagamento_mercadopago_pedido(pedido_id, payment_id_direto: str = "") -> dict:
     """
     Consulta a API oficial do Mercado Pago para verificar se o Pedido já foi pago.
     Se encontrar pagamento aprovado ('approved'), dá baixa automática no Supabase para 'pago'
     e dispara a notificação ao cliente.
-    Retorna: (aprovado: bool, status_mp: str, mensagem: str)
+    Retorna dict: {"aprovado": bool, "status": str, "mensagem": str}
     """
     token_mp = obter_token_mercadopago_ativo()
     if not token_mp:
-        return False, "sem_token", "Configure seu Access Token (`APP_USR-...`) em 💳 Pagamento Pix para ativar a baixa automática."
+        return {
+            "aprovado": False,
+            "status": "sem_token",
+            "mensagem": "Configure seu Access Token (`APP_USR-...`) em 💳 Pagamento Pix para ativar a baixa automática.",
+        }
 
     headers = {"Authorization": f"Bearer {token_mp}"}
     pagamentos_encontrados = []
@@ -2041,10 +2136,14 @@ def verificar_pagamento_mercadopago_pedido(pedido_id, payment_id_direto: str = "
             if r_busca.status_code == 200:
                 pagamentos_encontrados.extend(r_busca.json().get("results") or [])
     except Exception as e_mp_v:
-        return False, "erro", f"Erro ao consultar API do Mercado Pago: {e_mp_v}"
+        return {"aprovado": False, "status": "erro", "mensagem": f"Erro ao consultar API do Mercado Pago: {e_mp_v}"}
 
     if not pagamentos_encontrados:
-        return False, "nao_encontrado", f"Ainda não consta pagamento finalizado no Mercado Pago para o Pedido #{pedido_id}."
+        return {
+            "aprovado": False,
+            "status": "nao_encontrado",
+            "mensagem": f"Ainda não consta pagamento confirmado no Mercado Pago para o Pedido #{pedido_id}.",
+        }
 
     for pg in pagamentos_encontrados:
         st_mp = str(pg.get("status") or "").lower()
@@ -2063,16 +2162,24 @@ def verificar_pagamento_mercadopago_pedido(pedido_id, payment_id_direto: str = "
             except Exception:
                 pass
             metodo_mp = pg.get("payment_type_id") or pg.get("payment_method_id") or "Mercado Pago"
-            return True, "approved", f"✅ Pagamento APROVADO no Mercado Pago (ID #{pg.get('id')} • {metodo_mp})! Status do Pedido #{pedido_id} atualizado automaticamente para PAGO!"
+            return {
+                "aprovado": True,
+                "status": "approved",
+                "mensagem": f"✅ Pagamento APROVADO no Mercado Pago (ID #{pg.get('id')} • {metodo_mp})! Status do Pedido #{pedido_id} atualizado automaticamente para PAGO no Supabase!",
+            }
 
     ultimo_st = str(pagamentos_encontrados[0].get("status") or "pending").lower()
     mapa_trad = {
-        "pending": "🕒 Pagamento gerado e aguardando conclusão (ex: Pix ou Boleto pendente).",
+        "pending": "🕒 Pagamento gerado e aguardando conclusão no app do banco (Pix ou Boleto pendente).",
         "in_process": "⏳ Pagamento em análise pelo Mercado Pago.",
         "rejected": "❌ Pagamento recusado pela operadora do cartão. Tente outro meio.",
         "cancelled": "🚫 Pagamento cancelado ou expirado.",
     }
-    return False, ultimo_st, mapa_trad.get(ultimo_st, f"Status atual no Mercado Pago: {ultimo_st}")
+    return {
+        "aprovado": False,
+        "status": ultimo_st,
+        "mensagem": mapa_trad.get(ultimo_st, f"Status atual no Mercado Pago: {ultimo_st}"),
+    }
 
 
 def sincronizar_todos_pendentes_mercadopago() -> tuple:
@@ -2130,8 +2237,8 @@ def sincronizar_todos_pendentes_mercadopago() -> tuple:
 
 def testar_conexao_mercadopago(token_teste: str) -> tuple:
     """
-    Valida o Access Token do Mercado Pago consultando os dados da conta recebedora (`GET /users/me`)
-    e gerando um link de teste de R$ 1,00 no Checkout Pro.
+    Valida o Access Token do Mercado Pago consultando os dados da conta recebedora (`GET /users/me`),
+    gerando um link de teste de R$ 1,00 no Checkout Pro E testando a geração de QR Code Pix direto na API (`/v1/payments`).
     """
     tok = (token_teste or "").strip()
     if not tok or tok.startswith("APP_USR-seu"):
@@ -2147,7 +2254,7 @@ def testar_conexao_mercadopago(token_teste: str) -> tuple:
         email_conta = dados_conta.get("email") or ""
         id_conta = dados_conta.get("id") or ""
 
-        # Gera preferência de teste de R$ 1,00 para validar Checkout Pro
+        # 1. Gera preferência de teste de R$ 1,00 para validar Checkout Pro (com Pix e Cartão habilitados)
         payload_t = {
             "items": [
                 {
@@ -2158,6 +2265,11 @@ def testar_conexao_mercadopago(token_teste: str) -> tuple:
                     "unit_price": 1.00,
                 }
             ],
+            "payment_methods": {
+                "excluded_payment_methods": [],
+                "excluded_payment_types": [],
+                "installments": 12,
+            },
             "external_reference": "TESTE_CONEXAO",
         }
         r_pref = requests.post("https://api.mercadopago.com/checkout/preferences", headers=headers, json=payload_t, timeout=6)
@@ -2165,11 +2277,49 @@ def testar_conexao_mercadopago(token_teste: str) -> tuple:
         if r_pref.status_code in (200, 201):
             link_teste = r_pref.json().get("init_point", "")
 
+        # 2. Testa a geração de Pix Direto na API (/v1/payments) para diagnosticar se a conta tem Chave Pix ativa no MP
+        headers_pix_t = dict(headers)
+        headers_pix_t["X-Idempotency-Key"] = f"teste_pix_{uuid.uuid4().hex[:12]}"
+        r_pix_t = requests.post(
+            "https://api.mercadopago.com/v1/payments",
+            headers=headers_pix_t,
+            json={
+                "transaction_amount": 1.00,
+                "description": "Teste Diagnostico Pix Mercado Pago",
+                "payment_method_id": "pix",
+                "payer": {
+                    "email": "cliente.teste.loja@gmail.com",
+                    "first_name": "Cliente",
+                    "last_name": "Teste",
+                },
+            },
+            timeout=6,
+        )
+        d_pix_t = r_pix_t.json() if r_pix_t.content else {}
+        qr_pix_ok = bool(
+            r_pix_t.status_code in (200, 201)
+            and (d_pix_t.get("point_of_interaction") or {}).get("transaction_data", {}).get("qr_code")
+        )
+        if qr_pix_ok:
+            status_pix_txt = "✅ **Pix Direto na API Mercado Pago:** ATIVO! (QR Code Pix dinâmico gerado na tela da loja + Checkout Pro)"
+        else:
+            det_err_pix = d_pix_t.get("message") or ""
+            causas_t = d_pix_t.get("cause") or []
+            if isinstance(causas_t, list) and causas_t:
+                det_err_pix = f"{det_err_pix} ({causas_t[0].get('description') or causas_t[0].get('code') or ''})"
+            status_pix_txt = (
+                f"⚠️ **Aviso sobre o Pix no Mercado Pago:** A API informou: `{det_err_pix or 'Pix não habilitado neste Token'}`.\n"
+                f"  👉 **Como ativar o Pix no Mercado Pago:**\n"
+                f"  1. Confirme que você copiou o **Access Token** da aba **`Produtivas`** (e não da aba `Teste` — credenciais de teste não geram Pix real).\n"
+                f"  2. No aplicativo do **Mercado Pago**, vá em **Área Pix → Minhas Chaves** e tenha pelo menos **1 Chave Pix cadastrada** na sua conta Mercado Pago (o Mercado Pago exige uma chave Pix ativa na conta para liberar o Pix no Checkout).\n"
+                f"  3. Para testar o link como cliente, abra em uma **Aba Anônima** (pois o Mercado Pago oculta o Pix se você abrir o link logado na sua própria conta de vendedor)."
+            )
+
         msg_ok = (
-            f"✅ **Conexão 100% Ativa com o Mercado Pago!**\n"
+            f"✅ **Conexão Ativa com o Mercado Pago!**\n"
             f"• **Titular da Conta Recebedora:** {nome_conta} {sobrenome} (ID: `{id_conta}`)\n"
             f"• **E-mail da Conta:** `{email_conta}`\n"
-            f"• **Checkout Pro Automático:** Pronto para receber Pix, Cartão de Crédito até 12x, Saldo MP e Boleto direto na sua conta!"
+            f"• {status_pix_txt}"
         )
         return True, msg_ok, link_teste
     except Exception as e_t:
@@ -6293,12 +6443,14 @@ mp_ret_param = st.query_params.get("mp_retorno") or st.query_params.get("collect
 mp_ped_param = st.query_params.get("pedido_id") or str(st.query_params.get("external_reference") or "").replace("PED_", "")
 mp_pay_param = st.query_params.get("payment_id") or st.query_params.get("collection_id") or ""
 if (mp_ret_param or mp_pay_param) and mp_ped_param:
-    aprov_mp_ret, st_mp_ret, msg_mp_ret = verificar_pagamento_mercadopago_pedido(mp_ped_param, str(mp_pay_param))
+    _res_mp_ret = verificar_pagamento_mercadopago_pedido(mp_ped_param, str(mp_pay_param))
+    aprov_mp_ret = bool(_res_mp_ret.get("aprovado"))
+    msg_mp_ret = str(_res_mp_ret.get("mensagem") or "")
     if aprov_mp_ret or str(mp_ret_param).lower() in ("sucesso", "approved"):
-        st.session_state["_aviso_mp_retorno"] = ("sucesso", msg_mp_ret)
+        st.session_state["_aviso_mp_retorno"] = ("success", msg_mp_ret)
         st.session_state["aba_loja_cliente"] = "pedidos"
     elif str(mp_ret_param).lower() in ("pendente", "pending", "in_process"):
-        st.session_state["_aviso_mp_retorno"] = ("pendente", msg_mp_ret)
+        st.session_state["_aviso_mp_retorno"] = ("warning", msg_mp_ret)
         st.session_state["aba_loja_cliente"] = "pedidos"
     for _qp_k in ("mp_retorno", "pedido_id", "collection_id", "collection_status", "payment_id", "status", "external_reference", "payment_type", "merchant_order_id", "preference_id"):
         if _qp_k in st.query_params:
@@ -7523,28 +7675,44 @@ elif aba_loja == "carrinho":
                                         "estado": uf_c,
                                     }).eq("id", cliente_atual["id"]).execute()
                                 except Exception:
-                                    pass
+                                    try:
+                                        supabase.table("clientes").update({
+                                            "cep": cep_c,
+                                            "endereco_completo": endereco_c,
+                                        }).eq("id", cliente_atual["id"]).execute()
+                                    except Exception:
+                                        pass
 
-                        # 1. Vincular ou criar cliente relacional
+                        # 1. Vincular ou criar cliente relacional no Supabase (com fallback seguro de colunas)
                         cliente_id = cliente_atual.get("id") if cliente_atual else None
                         try:
                             res_cl_exist = supabase.table("clientes").select("id").eq("cpf_cnpj", doc_c).execute()
                             if res_cl_exist.data:
                                 cliente_id = res_cl_exist.data[0]["id"]
                             elif not cliente_id:
-                                dados_ins_cli = {
-                                    "nome": nome_c,
-                                    "cpf_cnpj": doc_c,
-                                    "email": email_c.strip().lower(),
-                                    "whatsapp": whats_c,
-                                    "cep": cep_c,
-                                    "endereco_completo": endereco_c,
-                                    "bairro": bairro_c,
-                                    "cidade": cid_c,
-                                    "estado": uf_c.upper(),
-                                    "tabela_preco": "Varejo",
-                                }
-                                res_ins_cl = supabase.table("clientes").insert(dados_ins_cli).execute()
+                                try:
+                                    res_ins_cl = supabase.table("clientes").insert({
+                                        "nome": nome_c,
+                                        "cpf_cnpj": doc_c,
+                                        "email": email_c.strip().lower(),
+                                        "whatsapp": whats_c,
+                                        "cep": cep_c,
+                                        "endereco_completo": endereco_c,
+                                        "bairro": bairro_c,
+                                        "cidade": cid_c,
+                                        "estado": uf_c.upper(),
+                                        "tabela_preco": "Varejo",
+                                    }).execute()
+                                except Exception:
+                                    res_ins_cl = supabase.table("clientes").insert({
+                                        "nome": nome_c,
+                                        "cpf_cnpj": doc_c,
+                                        "email": email_c.strip().lower(),
+                                        "whatsapp": whats_c,
+                                        "cep": cep_c,
+                                        "endereco_completo": endereco_c,
+                                        "tabela_preco": "Varejo",
+                                    }).execute()
                                 if res_ins_cl.data:
                                     cliente_id = res_ins_cl.data[0]["id"]
                         except Exception:
@@ -7628,14 +7796,7 @@ elif aba_loja == "carrinho":
                                 link_mp_especifico = info_l_it["link_mp_produto"]
 
                         resumo_titulos = ", ".join(f"{i.get('qtd', 1)}x {i.get('titulo')}" for i in carrinho_atual)
-                        link_mp_gerado = link_mp_especifico or gerar_link_checkout_mercadopago(
-                            titulo_pedido=resumo_titulos[:120],
-                            valor_total=total_calc,
-                            pedido_id="NOVO",
-                            email_cliente=email_c,
-                            nome_cliente=nome_c,
-                            cpf_cliente=doc_c,
-                        )
+                        link_mp_gerado = link_mp_especifico or ""
 
                         itens_pedido_json = []
                         for it_c in carrinho_atual:
@@ -7652,6 +7813,8 @@ elif aba_loja == "carrinho":
                                 "modalidade_frete": modalidade_frete_nome,
                                 "link_ton": "",
                                 "link_mp": link_mp_gerado,
+                                "pix_mp_qr_code": "",
+                                "pix_mp_payment_id": "",
                                 "fiscal": {
                                     "tipo_doc": tipo_doc_c,
                                     "documento": doc_c,
@@ -7684,7 +7847,13 @@ elif aba_loja == "carrinho":
                             "itens": itens_pedido_json,
                             "status_pagamento": "pendente",
                         }
-                        res_p = supabase.table("pedidos").insert(pedido_novo).execute()
+                        try:
+                            res_p = supabase.table("pedidos").insert(pedido_novo).execute()
+                        except Exception:
+                            pedido_novo_fb = dict(pedido_novo)
+                            pedido_novo_fb.pop("cliente_id", None)
+                            pedido_novo_fb.pop("cupom_id", None)
+                            res_p = supabase.table("pedidos").insert(pedido_novo_fb).execute()
                         id_ped = res_p.data[0]["id"] if res_p.data else "NOVO"
 
                         if res_p.data and "id" in res_p.data[0]:
@@ -7717,6 +7886,7 @@ elif aba_loja == "carrinho":
                                 except Exception:
                                     pass
 
+                        # 4. Gerar Checkout Pro Oficial (Cartão até 12x / Pix / Boleto) E Pix Direto via API do Mercado Pago com o ID real do pedido
                         if not link_mp_especifico:
                             link_mp_gerado = gerar_link_checkout_mercadopago(
                                 titulo_pedido=resumo_titulos[:120],
@@ -7726,13 +7896,23 @@ elif aba_loja == "carrinho":
                                 nome_cliente=nome_c,
                                 cpf_cliente=doc_c,
                             )
-                            if link_mp_gerado and res_p.data and "id" in res_p.data[0]:
-                                for _it_upd in itens_pedido_json:
-                                    _it_upd["link_mp"] = link_mp_gerado
-                                try:
-                                    supabase.table("pedidos").update({"itens": itens_pedido_json}).eq("id", id_ped).execute()
-                                except Exception:
-                                    pass
+                        dados_pix_mp = gerar_pix_direto_mercadopago(
+                            titulo_pedido=resumo_titulos[:120],
+                            valor_total=total_calc,
+                            pedido_id=id_ped,
+                            email_cliente=email_c,
+                            nome_cliente=nome_c,
+                            cpf_cliente=doc_c,
+                        )
+                        if res_p.data and "id" in res_p.data[0]:
+                            for _it_upd in itens_pedido_json:
+                                _it_upd["link_mp"] = link_mp_gerado
+                                _it_upd["pix_mp_qr_code"] = dados_pix_mp.get("qr_code") or ""
+                                _it_upd["pix_mp_payment_id"] = dados_pix_mp.get("payment_id") or ""
+                            try:
+                                supabase.table("pedidos").update({"itens": itens_pedido_json}).eq("id", id_ped).execute()
+                            except Exception:
+                                pass
 
                         # Se houver Webhook de WhatsApp configurado, avisa o lojista imediatamente em background
                         cfg_not_chk = obter_notificacoes_config()
@@ -7769,7 +7949,12 @@ elif aba_loja == "carrinho":
                             "metodo_pagamento": "mercadopago",
                             "link_ton": "",
                             "link_mp": link_mp_gerado,
+                            "pix_mp_qr_code": dados_pix_mp.get("qr_code") or "",
+                            "pix_mp_qr_base64": dados_pix_mp.get("qr_code_base64") or "",
+                            "pix_mp_payment_id": dados_pix_mp.get("payment_id") or "",
+                            "pix_mp_erro": dados_pix_mp.get("erro_mp") or "",
                             "cliente_nome": nome_c,
+                            "cliente_cpf": doc_c,
                             "email": email_c,
                             "whatsapp": whats_c,
                             "endereco": endereco_c,
@@ -7778,19 +7963,18 @@ elif aba_loja == "carrinho":
                         }
                         st.rerun()
 
-        # ÁREA DE PAGAMENTO EXCLUSIVA MERCADO PAGO E ALERTA WHATSAPP APÓS CONFIRMAÇÃO
+        # ÁREA DE PAGAMENTO EXCLUSIVA MERCADO PAGO (PIX DIRETO NA TELA + CHECKOUT PRO CARTÃO/BOLETO)
         if st.session_state.get("pedido_concluido") and "detalhes_pedido" in st.session_state:
             det = st.session_state["detalhes_pedido"]
             cfg_pag_pos = obter_pagamento_config()
-            rotulo_metodo = "💙 Mercado Pago Oficial (Pix, Cartão até 12x, Débito ou Boleto)"
 
-            st.success(f"🎉 **Pedido #{det['id']} Confirmado com Sucesso!** Conclua seu pagamento abaixo pelo **Mercado Pago**:")
+            st.success(f"🎉 **Pedido #{det['id']} Confirmado com Sucesso!** Escolha abaixo pagar no **QR Code Pix Mercado Pago** ou no **Cartão em até 12x / Boleto**:")
 
             msg_separar_loja = (
                 f"🛍️ *NOVO PEDIDO #{det['id']} — SEPARAR PRODUTO!*\n\n"
                 f"Olá equipe *{cfg_loja.get('nome_loja', 'Tags Informática')}*! Acabei de confirmar meu pedido no site:\n"
                 f"• *Pedido:* #{det['id']}\n"
-                f"• *Forma de Pagamento:* Checkout Mercado Pago\n"
+                f"• *Forma de Pagamento:* Mercado Pago Oficial\n"
                 f"• *Itens para Separar:* {det['titulo']}\n"
                 f"• *Frete / Entrega:* {det.get('modalidade_frete', 'Padrão')}\n"
                 f"• *Valor Total:* R$ {det['total']:.2f}\n\n"
@@ -7802,8 +7986,7 @@ elif aba_loja == "carrinho":
             url_whats_separar = f"https://wa.me/55{whats_num_clean}?text={urllib.parse.quote(msg_separar_loja)}"
 
             with st.container(border=True):
-                st.markdown("### 💙 Pagar Agora com Mercado Pago — Pix, Cartão até 12x, Saldo MP ou Boleto")
-                st.write(cfg_pag_pos.get("mp_instrucoes") or "Clique no botão abaixo para abrir o Checkout Oficial do Mercado Pago e escolher como pagar:")
+                st.markdown("### 💙 Pagamento Oficial Mercado Pago — Pix Imediato na Tela ou Cartão até 12x / Boleto")
                 link_mp_p = det.get("link_mp") or cfg_pag_pos.get("mp_link_padrao") or ""
                 if not link_mp_p and obter_token_mercadopago_ativo():
                     link_mp_p = gerar_link_checkout_mercadopago(
@@ -7812,46 +7995,71 @@ elif aba_loja == "carrinho":
                         pedido_id=det["id"],
                         email_cliente=det.get("email") or "",
                         nome_cliente=det.get("cliente_nome") or "",
+                        cpf_cliente=det.get("cliente_cpf") or "",
                     )
+
+                qr_pix_mp = det.get("pix_mp_qr_code") or ""
+                qr_b64_mp = det.get("pix_mp_qr_base64") or ""
+                pay_id_mp = det.get("pix_mp_payment_id") or ""
 
                 c_mp1, c_mp2 = st.columns([1.45, 1.55])
                 with c_mp1:
+                    st.markdown("#### ⚡ Opção 1: Pagar com Pix Agora (Direto na Tela)")
+                    if qr_pix_mp:
+                        st.caption("💙 **Pix Dinâmico Oficial Mercado Pago** (cai na hora e aprova seu pedido automaticamente):")
+                        if qr_b64_mp:
+                            st.image(f"data:image/png;base64,{qr_b64_mp}", caption=f"QR Code Pix Mercado Pago (ID #{pay_id_mp})", width=220)
+                        else:
+                            url_qr_mp = f"https://api.qrserver.com/v1/create-qr-code/?size=230x230&data={urllib.parse.quote(qr_pix_mp)}"
+                            st.image(url_qr_mp, caption=f"QR Code Pix Mercado Pago (ID #{pay_id_mp})", width=220)
+                        st.markdown("**📋 Pix Copia e Cola do Mercado Pago:**")
+                        st.code(qr_pix_mp, language="text")
+                    else:
+                        # Caso a conta Mercado Pago ainda não tenha Chave Pix cadastrada no MP, gera o QR Code Pix oficial da Chave Pix da loja
+                        pix_reserva = gerar_pix_bacen(
+                            chave=cfg_pag_pos.get("chave_pix") or CHAVE_PIX,
+                            nome=cfg_pag_pos.get("nome_beneficiario") or NOME_BENEFICIARIO,
+                            cidade=cfg_pag_pos.get("cidade_beneficiario") or CIDADE_BENEFICIARIO,
+                            valor=float(det["total"]),
+                            txid=f"PED{det['id']}",
+                        )
+                        url_qr_res = f"https://api.qrserver.com/v1/create-qr-code/?size=230x230&data={urllib.parse.quote(pix_reserva)}"
+                        st.image(url_qr_res, caption="Escaneie o QR Code Pix com o app do seu banco", width=220)
+                        st.markdown("**📋 Código Pix Copia e Cola:**")
+                        st.code(pix_reserva, language="text")
+
+                with c_mp2:
+                    st.markdown("#### 💳 Opção 2: Cartão até 12x, Saldo MP ou Boleto")
                     st.markdown(f"**Valor Total do Pedido:** :green[**R$ {det['total']:.2f}**]")
                     st.markdown(f"**Itens:** {det['titulo']}")
                     st.markdown(f"**Entrega:** {det.get('modalidade_frete', 'Padrão')}")
                     st.markdown(f"**Endereço:** {det.get('endereco', '-')}")
                     if link_mp_p:
                         st.link_button(
-                            "💙 Pagar Agora no Mercado Pago (Pix, Cartão até 12x ou Boleto) ↗",
+                            "💙 Abrir Checkout Mercado Pago (Cartão até 12x / Pix / Boleto) ↗",
                             link_mp_p,
                             type="primary",
                             use_container_width=True,
                         )
                     else:
-                        st.warning("⚠️ O Access Token do Mercado Pago ainda não foi salvo no Painel Admin (`?admin=1` → `💳 Pagamento Pix`). Peça o link direto no botão do WhatsApp abaixo!")
+                        st.warning("⚠️ Configure seu Access Token do Mercado Pago no Painel Admin (`?admin=1` → `💳 Pagamento Pix`) para gerar o link de cartão.")
+
                     if st.button(
-                        "🔄 Já Paguei no Mercado Pago! Verificar Aprovação Agora",
+                        "🔄 Já Paguei! Verificar Aprovação Automática no Mercado Pago",
                         key=f"btn_chk_mp_pos_{det['id']}",
                         use_container_width=True,
                     ):
                         with st.spinner("Consultando aprovação em tempo real no Mercado Pago..."):
-                            _chk_pos = verificar_pagamento_mercadopago_pedido(det["id"])
+                            _chk_pos = verificar_pagamento_mercadopago_pedido(det["id"], pay_id_mp)
                         if _chk_pos.get("aprovado"):
                             st.success(f"🎉 {_chk_pos['mensagem']}")
                             st.balloons()
                         else:
                             st.warning(_chk_pos.get("mensagem", "Pagamento ainda não consta como aprovado."))
-                with c_mp2:
-                    st.info(
-                        "✅ **Compra 100% Garantida pelo Mercado Pago:**\n"
-                        "• **Pix no Mercado Pago:** Aprovação instantânea.\n"
-                        "• **Cartão de Crédito:** Parcele em até 12x.\n"
-                        "• **Saldo em Conta ou Boleto:** Disponível na mesma tela.\n"
-                        "• Assim que você paga, seu pedido muda para **Pago** automaticamente!"
-                    )
+
                     st.markdown(
                         f"""
-                        <div style="background:linear-gradient(90deg, #ECFDF5, #F0FDF4); border:1px solid #10B981; border-radius:12px; padding:12px 16px; margin-top:8px;">
+                        <div style="background:linear-gradient(90deg, #ECFDF5, #F0FDF4); border:1px solid #10B981; border-radius:12px; padding:12px 16px; margin-top:10px;">
                             <div style="font-size:0.9rem; font-weight:800; color:#047857; margin-bottom:6px;">
                                 📲 Quer agilizar a separação no estoque?
                             </div>
@@ -7886,10 +8094,10 @@ elif aba_loja == "pedidos":
     _aviso_mp = st.session_state.pop("_aviso_mp_retorno", None)
     if _aviso_mp:
         _tp_av, _msg_av = _aviso_mp
-        if _tp_av == "success":
+        if _tp_av in ("success", "sucesso"):
             st.success(f"🎉 **Retorno Mercado Pago:** {_msg_av}")
             st.balloons()
-        elif _tp_av == "warning":
+        elif _tp_av in ("warning", "pendente"):
             st.warning(f"⏳ **Retorno Mercado Pago:** {_msg_av}")
         else:
             st.info(f"ℹ️ **Retorno Mercado Pago:** {_msg_av}")
@@ -7981,7 +8189,7 @@ elif aba_loja == "pedidos":
                     st.error("❌ Este pedido foi cancelado. Entre em contato com o suporte caso precise de ajuda.")
                 else:
                     etapas_info = [
-                        (1, "🕒 Pedido Recebido", "Aguardando Pix"),
+                        (1, "🕒 Pedido Recebido", "Aguardando Pagamento"),
                         (2, "✅ Pago & Separado", "Nota e preparação"),
                         (3, "🚚 Em Transporte", "Enviado à transportadora"),
                         (4, "🎉 Pedido Entregue", "Concluído com sucesso"),
@@ -8011,7 +8219,7 @@ elif aba_loja == "pedidos":
                             st.markdown(f"🚚 **Código de Rastreio Oficial:** `{cod_rastreio_c}`")
                             st.caption("Copie o código acima ou clique ao lado para acompanhar a movimentação da sua encomenda.")
                         elif st_p == "pendente":
-                            st.markdown("⏳ **Status do Rastreio:** Aguardando confirmação do pagamento Pix para iniciar a separação e envio.")
+                            st.markdown("⏳ **Status do Rastreio:** Aguardando confirmação do pagamento no Mercado Pago para iniciar a separação e envio.")
                         elif st_p == "pago":
                             st.markdown("📦 **Status do Rastreio:** Pagamento confirmado! Seu pedido está sendo embalado no Centro de Distribuição e o código de rastreio será exibido aqui assim que despachado.")
                         else:
@@ -8025,7 +8233,7 @@ elif aba_loja == "pedidos":
                                 use_container_width=True,
                             )
 
-                # ITENS DO PEDIDO E AÇÕES DO CLIENTE (2ª VIA PIX, DANFE, SUPORTE)
+                # ITENS DO PEDIDO E AÇÕES DO CLIENTE (PAGAMENTO MERCADO PAGO, DANFE, SUPORTE)
                 st.markdown("**Itens do Pedido:**")
                 for it_p in (ped_c.get("itens") or []):
                     st.write(f"• **{it_p.get('qtd', 1)}x {it_p.get('titulo', 'Produto')}** — R$ {float(it_p.get('preco_unit', 0)):.2f}/un")
@@ -8033,37 +8241,45 @@ elif aba_loja == "pedidos":
                 ca_p1, ca_p2, ca_p3 = st.columns(3)
                 with ca_p1:
                     if st_p == "pendente":
-                        with st.popover("💳 Pagar / 2ª Via (Pix, Ton ou MP)", use_container_width=True):
+                        with st.popover("💙 Pagar no Mercado Pago (Pix ou Cartão)", use_container_width=True):
                             cfg_pag_2v = obter_pagamento_config()
-                            pix_2via = gerar_pix_bacen(
-                                chave=CHAVE_PIX,
-                                nome=NOME_BENEFICIARIO,
-                                cidade=CIDADE_BENEFICIARIO,
-                                valor=float(ped_c.get("valor_total", 0)),
-                                txid=f"PED{ped_c['id']}",
-                            )
-                            qr_2via = f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={urllib.parse.quote(pix_2via)}"
-                            st.image(qr_2via, width=210)
-                            st.caption("⚡ Pix Copia e Cola:")
-                            st.code(pix_2via, language="text")
-                            lnk_ton_2v = ""
                             lnk_mp_2v = ""
+                            qr_mp_2v = ""
+                            pay_id_2v = ""
                             if ped_c.get("itens") and isinstance(ped_c["itens"], list) and len(ped_c["itens"]) > 0:
-                                lnk_ton_2v = ped_c["itens"][0].get("link_ton") or ""
                                 lnk_mp_2v = ped_c["itens"][0].get("link_mp") or ""
-                            lnk_ton_2v = lnk_ton_2v or cfg_pag_2v.get("ton_link_padrao") or ""
+                                qr_mp_2v = ped_c["itens"][0].get("pix_mp_qr_code") or ""
+                                pay_id_2v = ped_c["itens"][0].get("pix_mp_payment_id") or ""
                             lnk_mp_2v = lnk_mp_2v or cfg_pag_2v.get("mp_link_padrao") or ""
-                            if lnk_ton_2v:
-                                st.link_button("💚 Pagar no Link da Ton (até 12x) ↗", lnk_ton_2v, type="primary", use_container_width=True)
+
+                            if qr_mp_2v:
+                                st.caption("⚡ **QR Code Pix Oficial Mercado Pago:**")
+                                qr_2via_url = f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={urllib.parse.quote(qr_mp_2v)}"
+                                st.image(qr_2via_url, width=210)
+                                st.caption("📋 Pix Copia e Cola Mercado Pago:")
+                                st.code(qr_mp_2v, language="text")
+                            else:
+                                pix_2via = gerar_pix_bacen(
+                                    chave=cfg_pag_2v.get("chave_pix") or CHAVE_PIX,
+                                    nome=cfg_pag_2v.get("nome_beneficiario") or NOME_BENEFICIARIO,
+                                    cidade=cfg_pag_2v.get("cidade_beneficiario") or CIDADE_BENEFICIARIO,
+                                    valor=float(ped_c.get("valor_total", 0)),
+                                    txid=f"PED{ped_c['id']}",
+                                )
+                                qr_2via = f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={urllib.parse.quote(pix_2via)}"
+                                st.image(qr_2via, width=210)
+                                st.caption("⚡ Pix Copia e Cola:")
+                                st.code(pix_2via, language="text")
+
                             if lnk_mp_2v:
-                                st.link_button("💙 Pagar no Mercado Pago (Cartão/Pix/Boleto) ↗", lnk_mp_2v, type="primary", use_container_width=True)
+                                st.link_button("💙 Pagar no Mercado Pago (Cartão até 12x / Pix / Boleto) ↗", lnk_mp_2v, type="primary", use_container_width=True)
                             if obter_token_mercadopago_ativo():
                                 if st.button(
                                     "🔄 Já Paguei no Mercado Pago (Verificar Aprovação)",
                                     key=f"btn_chk_mp_2v_{ped_c['id']}",
                                     use_container_width=True,
                                 ):
-                                    _res_2v = verificar_pagamento_mercadopago_pedido(ped_c["id"])
+                                    _res_2v = verificar_pagamento_mercadopago_pedido(ped_c["id"], pay_id_2v)
                                     if _res_2v.get("aprovado"):
                                         st.success(_res_2v["mensagem"])
                                         st.rerun()
