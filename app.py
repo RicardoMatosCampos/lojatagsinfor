@@ -29,7 +29,7 @@ import re
 import smtplib
 import urllib.parse
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -1871,6 +1871,194 @@ def obter_notificacoes_config() -> dict:
     return cfg_n
 
 
+def verificar_tabela_logs_supabase() -> bool:
+    """Verifica se a tabela relacional `public.logs_auditoria` já foi criada no Supabase."""
+    try:
+        supabase.table("logs_auditoria").select("id").limit(1).execute()
+        return True
+    except Exception:
+        return False
+
+
+def obter_logs_auditoria() -> list:
+    """
+    Carrega o histórico completo de Logs de Alterações (EXCLUSIVO DO ADMIN),
+    priorizando a tabela relacional `public.logs_auditoria` do banco de dados Supabase.
+    """
+    logs_combinados = []
+    ids_vistos = set()
+
+    # 1. Busca prioritariamente da tabela relacional `public.logs_auditoria` no banco Supabase
+    try:
+        r_tb_logs = supabase.table("logs_auditoria").select("*").order("id", desc=True).limit(300).execute()
+        for lg_db in (r_tb_logs.data or []):
+            lid = str(lg_db.get("log_uid") or lg_db.get("id") or "")
+            if lid and lid not in ids_vistos:
+                ids_vistos.add(lid)
+            logs_combinados.append({
+                "id_banco": lg_db.get("id"),
+                "uid": lid,
+                "data_hora": lg_db.get("data_hora") or str(lg_db.get("created_at") or "")[:19].replace("T", " "),
+                "origem": lg_db.get("origem") or "🛡️ Admin",
+                "autor": lg_db.get("autor") or "Sistema",
+                "acao": lg_db.get("acao") or "Alteração",
+                "tabela_afetada": lg_db.get("tabela_afetada") or "clientes",
+                "registro_id": lg_db.get("registro_id"),
+                "alvo": lg_db.get("alvo") or "-",
+                "cliente_ref": lg_db.get("cliente_ref") or "",
+                "alteracoes": lg_db.get("alteracoes") if isinstance(lg_db.get("alteracoes"), list) else [],
+                "salvo_tabela_sql": True,
+            })
+    except Exception:
+        pass
+
+    # 2. Combina com o espelho de segurança em `config_loja["logs_auditoria"]` caso algum log tenha sido gerado antes de rodar o CREATE TABLE
+    logs_cfg = st.session_state.get("config_loja", {}).get("logs_auditoria", [])
+    if isinstance(logs_cfg, list):
+        for lg_c in logs_cfg:
+            if isinstance(lg_c, dict):
+                uid_c = str(lg_c.get("uid") or "")
+                if not uid_c or uid_c not in ids_vistos:
+                    if uid_c:
+                        ids_vistos.add(uid_c)
+                    lg_copia = dict(lg_c)
+                    lg_copia.setdefault("salvo_tabela_sql", False)
+                    logs_combinados.append(lg_copia)
+
+    return logs_combinados
+
+
+def registrar_log_auditoria(
+    origem: str,
+    autor: str,
+    acao: str,
+    alvo: str,
+    dados_antes: dict = None,
+    dados_depois: dict = None,
+    alteracoes_manuais: list = None,
+    cliente_ref: str = "",
+    tabela_afetada: str = "clientes",
+    registro_id=None,
+):
+    """
+    Compara `dados_antes` e `dados_depois` (ou usa `alteracoes_manuais`) e grava um registro imutável
+    de auditoria diretamente na tabela relacional `public.logs_auditoria` do Supabase (para consultas SQL
+    e painel Admin), mantendo espelho de segurança em `config_loja`.
+    """
+    lista_alt = list(alteracoes_manuais or [])
+    if isinstance(dados_antes, dict) and isinstance(dados_depois, dict):
+        rotulos_campos = {
+            "nome": "Nome",
+            "cpf": "CPF/CNPJ",
+            "cpf_cnpj": "CPF/CNPJ",
+            "email": "E-mail",
+            "whatsapp": "WhatsApp",
+            "cep": "CEP",
+            "endereco": "Endereço",
+            "endereco_completo": "Endereço Completo",
+            "rua": "Rua/Logradouro",
+            "numero": "Número",
+            "bairro": "Bairro",
+            "cidade": "Cidade",
+            "estado": "UF",
+            "tabela": "Tabela de Preço",
+            "tabela_preco": "Tabela de Preço",
+            "status_pagamento": "Status do Pedido",
+            "modalidade_frete": "Modalidade de Entrega",
+            "valor_frete": "Valor do Frete (R$)",
+            "valor_total": "Valor Total (R$)",
+            "codigo_rastreio": "Rastreio / Obs.",
+        }
+        for k_cmp, v_novo in dados_depois.items():
+            v_ant = dados_antes.get(k_cmp, "")
+            str_ant = str(v_ant if v_ant is not None else "").strip()
+            str_novo = str(v_novo if v_novo is not None else "").strip()
+            if str_ant != str_novo:
+                lista_alt.append({
+                    "campo": rotulos_campos.get(k_cmp, k_cmp.replace("_", " ").title()),
+                    "antes": str_ant or "(vazio)",
+                    "depois": str_novo or "(vazio)",
+                })
+
+    if not lista_alt:
+        return False
+
+    if "pedido" in acao.lower() or "pedido" in alvo.lower():
+        tabela_afetada = "pedidos"
+
+    agora_str = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    uid_log = f"log_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    reg_id_int = None
+    try:
+        if registro_id is not None and str(registro_id).isdigit():
+            reg_id_int = int(registro_id)
+    except Exception:
+        reg_id_int = None
+
+    novo_log = {
+        "uid": uid_log,
+        "data_hora": agora_str,
+        "origem": origem,  # "👤 Cliente" ou "🛡️ Admin"
+        "autor": autor,
+        "acao": acao,
+        "tabela_afetada": tabela_afetada,
+        "registro_id": reg_id_int,
+        "alvo": alvo,
+        "cliente_ref": str(cliente_ref or ""),
+        "alteracoes": lista_alt,
+    }
+
+    # 1. Grava na tabela relacional `public.logs_auditoria` do Supabase (para consultas SQL no gerenciamento de banco)
+    gravou_sql = False
+    try:
+        payload_sql_log = {
+            "log_uid": uid_log,
+            "data_hora": agora_str,
+            "origem": origem,
+            "autor": autor,
+            "acao": acao,
+            "tabela_afetada": tabela_afetada,
+            "registro_id": reg_id_int,
+            "alvo": alvo,
+            "cliente_ref": str(cliente_ref or ""),
+            "alteracoes": lista_alt,
+            "dados_antes": dados_antes if isinstance(dados_antes, dict) else {},
+            "dados_depois": dados_depois if isinstance(dados_depois, dict) else {},
+        }
+        try:
+            supabase.table("logs_auditoria").insert(payload_sql_log).execute()
+            gravou_sql = True
+        except Exception:
+            # Fallback caso a tabela tenha sido criada com a versão anterior sem tabela_afetada/dados_antes
+            supabase.table("logs_auditoria").insert({
+                "log_uid": uid_log,
+                "data_hora": agora_str,
+                "origem": origem,
+                "autor": autor,
+                "acao": acao,
+                "alvo": alvo,
+                "cliente_ref": str(cliente_ref or ""),
+                "alteracoes": lista_alt,
+            }).execute()
+            gravou_sql = True
+    except Exception:
+        pass
+
+    novo_log["salvo_tabela_sql"] = gravou_sql
+
+    # 2. Mantém espelho em `config_loja["logs_auditoria"]` como backup automático
+    cfg_l = st.session_state.setdefault("config_loja", dict(CONFIG_LOJA_PADRAO))
+    logs_atuais = cfg_l.get("logs_auditoria")
+    if not isinstance(logs_atuais, list):
+        logs_atuais = []
+    logs_atuais.insert(0, novo_log)
+    cfg_l["logs_auditoria"] = logs_atuais[:300]
+    salvar_config_loja_supabase(cfg_l)
+    salvar_estado_persistente()
+
+    return True
+
+
 def calcular_opcoes_frete(cep_destino: str = "", subtotal: float = 0.0, itens: list = None, cupom_frete_gratis: bool = False) -> list:
     """
     Retorna lista de modalidades de entrega disponíveis com (id, nome, valor, prazo, destaque).
@@ -2509,19 +2697,115 @@ def enviar_notificacao_status_cliente(ped: dict, novo_status: str, rastreio: str
 
     return email_ok, " | ".join(logs), url_whats_cli
 
-# Cupons de Desconto ativos na loja
-if "cupons" not in st.session_state:
-    st.session_state["cupons"] = [
-        {"codigo": "PRIMEIRACOMPRA", "tipo": "Porcentagem", "valor": 10.0, "ativo": True},
-        {"codigo": "TAGS15", "tipo": "Porcentagem", "valor": 15.0, "ativo": True},
-        {"codigo": "DESCONTO20", "tipo": "Valor fixo", "valor": 20.0, "ativo": True},
+def obter_whatsapp_oficial_loja() -> tuple:
+    """
+    Retorna `(whatsapp_formatado, whatsapp_apenas_numeros)` unificando o número único do lojista
+    em toda a loja (Barra do Topo, Botão Flutuante, Cabeçalho, Checkout, Rastreio, Suporte e Rodapé).
+    Não requer nenhuma API paga — utiliza o link direto oficial `https://wa.me/55...`.
+    """
+    cfg_lj = st.session_state.get("config_loja", {})
+    cfg_nt = obter_notificacoes_config()
+    fisc_lj = st.session_state.get("dados_fiscais_loja", {})
+
+    candidatos = [
+        cfg_lj.get("whatsapp_unico_loja"),
+        cfg_lj.get("rodape_whatsapp"),
+        cfg_nt.get("whatsapp_loja_alertas"),
+        fisc_lj.get("telefone_fiscal"),
+        WHATSAPP_LOJA,
     ]
+    escolhido_raw = WHATSAPP_LOJA
+    for cand in candidatos:
+        s_cand = str(cand or "").strip()
+        num_cand = re.sub(r"\D", "", s_cand)
+        if len(num_cand) >= 10 and num_cand != "11999999999":
+            escolhido_raw = s_cand
+            break
+    num_limpo = re.sub(r"\D", "", str(escolhido_raw)) or "92999999999"
+    if num_limpo.startswith("55") and len(num_limpo) >= 12:
+        num_limpo = num_limpo[2:]
+    return str(escolhido_raw), num_limpo
+
+
+def atualizar_whatsapp_unico_loja(novo_whats: str):
+    """Sincroniza o número único do lojista em todas as configurações da loja e salva no Supabase."""
+    w_str = (novo_whats or "").strip()
+    if not w_str:
+        return
+    cfg_l = st.session_state.setdefault("config_loja", dict(CONFIG_LOJA_PADRAO))
+    cfg_l["whatsapp_unico_loja"] = w_str
+    cfg_l["rodape_whatsapp"] = w_str
+    nt_c = dict(obter_notificacoes_config())
+    nt_c["whatsapp_loja_alertas"] = w_str
+    cfg_l["notificacoes_config"] = nt_c
+    if "dados_fiscais_loja" in st.session_state and isinstance(st.session_state["dados_fiscais_loja"], dict):
+        st.session_state["dados_fiscais_loja"]["telefone_fiscal"] = w_str
+    salvar_config_loja_supabase(cfg_l)
+    salvar_estado_persistente()
+
+
+CUPONS_PADRAO_INICIAIS = [
+    {"codigo": "PRIMEIRACOMPRA", "tipo": "Porcentagem", "valor": 10.0, "min_carrinho": 0.0, "limite_usos": 0, "usos_atuais": 0, "ativo": True},
+    {"codigo": "TAGS15", "tipo": "Porcentagem", "valor": 15.0, "min_carrinho": 0.0, "limite_usos": 0, "usos_atuais": 0, "ativo": True},
+    {"codigo": "DESCONTO20", "tipo": "Valor fixo", "valor": 20.0, "min_carrinho": 50.0, "limite_usos": 0, "usos_atuais": 0, "ativo": True},
+]
+
+
+def carregar_todos_cupons_loja() -> list:
+    """
+    Carrega todos os cupons (ativos e desativados) da tabela `public.cupons` do Supabase,
+    com espelho em `config_loja['cupons_salvos']` para nunca perder alterações.
+    """
+    lista_db = []
     try:
-        res_cp = supabase.table("cupons").select("*").eq("ativo", True).execute()
+        res_cp = supabase.table("cupons").select("*").order("id").execute()
         if res_cp.data:
-            st.session_state["cupons"] = res_cp.data
+            lista_db = list(res_cp.data)
     except Exception:
         pass
+
+    if not lista_db:
+        salvos_cfg = st.session_state.get("config_loja", {}).get("cupons_salvos")
+        if isinstance(salvos_cfg, list) and salvos_cfg:
+            lista_db = [dict(c) for c in salvos_cfg if isinstance(c, dict)]
+        else:
+            lista_db = [dict(c) for c in CUPONS_PADRAO_INICIAIS]
+        # Semeia na tabela `public.cupons` do Supabase para que todos já existam no banco
+        for cp_seed in lista_db:
+            try:
+                r_ins_cp = supabase.table("cupons").upsert(
+                    {
+                        "codigo": str(cp_seed.get("codigo", "")).strip().upper(),
+                        "tipo": cp_seed.get("tipo", "Porcentagem"),
+                        "valor": float(cp_seed.get("valor") or 0.0),
+                        "min_carrinho": float(cp_seed.get("min_carrinho") or 0.0),
+                        "limite_usos": int(cp_seed.get("limite_usos") or 0),
+                        "usos_atuais": int(cp_seed.get("usos_atuais") or 0),
+                        "ativo": bool(cp_seed.get("ativo", True)),
+                    },
+                    on_conflict="codigo",
+                ).execute()
+                if r_ins_cp.data and r_ins_cp.data[0].get("id"):
+                    cp_seed["id"] = r_ins_cp.data[0]["id"]
+            except Exception:
+                pass
+
+    st.session_state["cupons"] = lista_db
+    return lista_db
+
+
+def salvar_lista_cupons_loja(lista_cupons: list):
+    """Persiste a lista completa de cupons (ativos e pausados) na sessão e no `config_loja` do Supabase."""
+    st.session_state["cupons"] = lista_cupons
+    cfg_l = st.session_state.setdefault("config_loja", dict(CONFIG_LOJA_PADRAO))
+    cfg_l["cupons_salvos"] = lista_cupons
+    salvar_config_loja_supabase(cfg_l)
+    salvar_estado_persistente()
+
+
+# Cupons de Desconto (Ativos e Pausados)
+if "cupons" not in st.session_state:
+    carregar_todos_cupons_loja()
 
 # Clientes cadastrados manualmente
 if "clientes_extras" not in st.session_state:
@@ -3208,6 +3492,8 @@ def salvar_rastreio_no_pedido(ped: dict, novo_rastreio: str, novo_status: str = 
         payload_com_col = dict(payload_up)
         payload_com_col["codigo_rastreio"] = rastreio_limpo or None
         payload_com_col["estoque_devolvido"] = foi_devolvido
+        if novo_status:
+            payload_com_col["status_entrega"] = novo_status
         supabase.table("pedidos").update(payload_com_col).eq("id", pid).execute()
     except Exception:
         supabase.table("pedidos").update(payload_up).eq("id", pid).execute()
@@ -4499,6 +4785,7 @@ if modo_admin_ativo:
                             try:
                                 supabase.table("produtos").update({
                                     "preco_original": pr_orig_val,
+                                    "preco_custo": float(preco_custo_in or 0.0),
                                     "destaque": bool(destaque_in),
                                     "galeria_imagens": galeria_lista,
                                     "video_url": video_url_in.strip() or None,
@@ -5082,14 +5369,26 @@ if modo_admin_ativo:
                         np_txt = st.text_input("Texto da Barra Promocional do Topo", value=cfg.get("top_promo", ""))
                         n_loc_top = st.text_input("Selo de Localização / Envio no Topo", value=cfg.get("localizacao_cabecalho", "📍 Manaus/AM • Envio p/ Todo Brasil"))
 
-                        if st.form_submit_button("💾 Salvar Cabeçalho no Supabase", type="primary", width="stretch"):
+                        st.markdown("---")
+                        st.markdown("##### 💬 Seu Número Único de WhatsApp na Loja (Sem precisar de API!)")
+                        st.caption("Como você é o único responsável pelo atendimento, informe seu número com DDD abaixo. Todos os botões do site (`💬 CENTRAL WHATSAPP` no topo, `💬 Botão Flutuante Verde`, `Checkout`, `Rastreio` e `Rodapé`) abrirão conversa gratuita direto no seu WhatsApp via link oficial `wa.me`:")
+                        w_atual_fmt, _ = obter_whatsapp_oficial_loja()
+                        n_whats_unico = st.text_input("📱 Meu WhatsApp Oficial de Atendimento (com DDD) *", value=w_atual_fmt, placeholder="Ex: 92981018296")
+                        cw_op1, cw_op2 = st.columns(2)
+                        ex_w_topo = cw_op1.checkbox("Exibir '💬 CENTRAL WHATSAPP' na barra do topo", value=bool(cfg.get("exibir_whats_topo", True)))
+                        ex_w_flut = cw_op2.checkbox("Exibir botão verde flutuante de WhatsApp no canto da tela", value=bool(cfg.get("exibir_whats_flutuante", True)))
+
+                        if st.form_submit_button("💾 Salvar Cabeçalho & WhatsApp no Supabase", type="primary", width="stretch"):
                             st.session_state["config_loja"]["nome_loja"] = nn.strip() or "Tags Informática"
                             st.session_state["config_loja"]["status_loja"] = n_status_lj
                             st.session_state["config_loja"]["slogan_cabecalho"] = n_slogan.strip()
                             st.session_state["config_loja"]["top_promo"] = np_txt.strip()
                             st.session_state["config_loja"]["localizacao_cabecalho"] = n_loc_top.strip()
+                            st.session_state["config_loja"]["exibir_whats_topo"] = bool(ex_w_topo)
+                            st.session_state["config_loja"]["exibir_whats_flutuante"] = bool(ex_w_flut)
+                            atualizar_whatsapp_unico_loja(n_whats_unico)
                             salvar_config_loja_supabase()
-                            st.success("✅ Cabeçalho salvo no Supabase com sucesso!")
+                            st.success("✅ Cabeçalho e seu número único de WhatsApp salvos em toda a loja!")
                             st.rerun()
 
                 with col_l2:
@@ -5194,16 +5493,22 @@ if modo_admin_ativo:
                         st.rerun()
 
         # =================================================================
-        # 5. ABA CLIENTES & SUPORTE (LISTA, ADICIONAR, SENHAS E CHAMADOS)
+        # 5. ABA CLIENTES & SUPORTE (LISTA, EDITAR, ADICIONAR, SENHAS, CHAMADOS E LOGS)
         # =================================================================
         elif aba_admin == "👥 Clientes":
-            opcoes_cli = ["📋 Lista de clientes", "➕ Adicionar cliente", "🔑 Alterar Senha de Usuários", "🎧 Chamados de Suporte"]
+            opcoes_cli = [
+                "📋 Lista de clientes",
+                "➕ Adicionar cliente",
+                "🔑 Alterar Senha de Usuários",
+                "🎧 Chamados de Suporte",
+                "📜 Logs de Alterações",
+            ]
             if "sub_aba_cli" not in st.session_state or st.session_state["sub_aba_cli"] not in opcoes_cli:
                 st.session_state["sub_aba_cli"] = "📋 Lista de clientes"
 
-            st.markdown('<h1 class="admin-page-title">Clientes & Atendimento</h1>', unsafe_allow_html=True)
+            st.markdown('<h1 class="admin-page-title">Clientes, Atendimento & Auditoria de Logs</h1>', unsafe_allow_html=True)
 
-            col_cl_b1, col_cl_b2, col_cl_b3, col_cl_b4 = st.columns([1.3, 1.3, 1.6, 1.4])
+            col_cl_b1, col_cl_b2, col_cl_b3, col_cl_b4, col_cl_b5 = st.columns([1.2, 1.2, 1.3, 1.35, 1.45])
             with col_cl_b1:
                 st.button(
                     "📋 Lista de clientes",
@@ -5240,8 +5545,18 @@ if modo_admin_ativo:
                     on_click=ir_para_sub_aba,
                     args=("sub_aba_cli", "🎧 Chamados de Suporte"),
                 )
+            with col_cl_b5:
+                st.button(
+                    "📜 Logs de Alterações",
+                    key="btn_tab_cli_logs",
+                    type="primary" if st.session_state["sub_aba_cli"] == "📜 Logs de Alterações" else "secondary",
+                    use_container_width=True,
+                    on_click=ir_para_sub_aba,
+                    args=("sub_aba_cli", "📜 Logs de Alterações"),
+                )
 
             sub_aba_cli = st.session_state["sub_aba_cli"]
+            nome_admin_logado = (st.session_state.get("auth_user") or {}).get("nome") or (st.session_state.get("auth_user") or {}).get("email") or "Administrador"
 
             if sub_aba_cli == "📋 Lista de clientes":
                 # Carrega clientes cadastrados diretamente na tabela clientes do Supabase
@@ -5258,8 +5573,11 @@ if modo_admin_ativo:
                             "whatsapp": c.get("whatsapp") or "Não informado",
                             "email": c.get("email") or "Não informado",
                             "endereco": c.get("endereco_completo") or "Não informado",
+                            "bairro": c.get("bairro") or "",
+                            "cidade": c.get("cidade") or "Manaus",
+                            "estado": c.get("estado") or "AM",
                             "cep": c.get("cep") or "Não informado",
-                            "tabela": c.get("tabela_preco", "Varejo"),
+                            "tabela": c.get("tabela_preco") or "Varejo",
                             "tem_senha": bool(c.get("senha")),
                             "total_pedidos": 0,
                         }
@@ -5283,6 +5601,9 @@ if modo_admin_ativo:
                             "whatsapp": ped.get("cliente_whatsapp", ""),
                             "email": ped.get("cliente_email", ""),
                             "endereco": ped.get("endereco_completo", "Não informado"),
+                            "bairro": "",
+                            "cidade": "Manaus",
+                            "estado": "AM",
                             "cep": ped.get("cep", ""),
                             "tabela": "Varejo",
                             "tem_senha": False,
@@ -5298,7 +5619,6 @@ if modo_admin_ativo:
                         clientes_map[cpf_e] = c_extra
 
                 if not clientes_map:
-                    # Tela idêntica ao print do usuário (Nuvemshop: "Seu primeiro cliente vem aí!")
                     st.markdown(
                         """
                         <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:16px; padding:48px 24px; text-align:center; max-width:680px; margin:20px auto;">
@@ -5330,22 +5650,9 @@ if modo_admin_ativo:
                             })
                             st.success("Cliente de teste adicionado!")
                             st.rerun()
-
-                    st.markdown(
-                        """
-                        <div style="background:#F8FAFC; border:1px solid #E2E8F0; border-radius:12px; padding:18px 20px; display:flex; align-items:center; gap:16px; margin-top:24px;">
-                            <div style="background:#0284C7; color:white; border-radius:8px; width:42px; height:42px; display:flex; align-items:center; justify-content:center; font-size:1.2rem; font-weight:800;">NM</div>
-                            <div>
-                                <strong style="color:#0F172A; font-size:0.95rem;">Tags Marketing & Relacionamento</strong><br>
-                                <span style="color:#64748B; font-size:0.85rem;">Mantenha contato direto via WhatsApp com cada cliente para fidelização e envio de certificados dos cursos.</span>
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
                 else:
                     busca_cli = st.text_input("🔍 Buscar cliente por Nome, E-mail ou CPF:", placeholder="Digite o nome, e-mail ou CPF...")
-                    st.caption(f"Total de {len(clientes_map)} cliente(s) cadastrado(s)")
+                    st.caption(f"Total de {len(clientes_map)} cliente(s) cadastrado(s) • Toda edição feita por você ou pelo cliente fica gravada na aba **📜 Logs de Alterações**.")
 
                     for idx_c_list, (chave_c, cli) in enumerate(clientes_map.items()):
                         if busca_cli:
@@ -5358,85 +5665,241 @@ if modo_admin_ativo:
                                 continue
 
                         with st.container(border=True):
-                            c_c1, c_c2, c_c3 = st.columns([2.8, 2.7, 2.3])
+                            c_c1, c_c2, c_c3 = st.columns([2.7, 2.7, 2.4])
                             with c_c1:
                                 st.markdown(f"**👤 {cli['nome']}**")
                                 st.write(f"CPF: `{cli.get('cpf', '-')}` | E-mail: `{cli.get('email', 'Não informado')}`")
+                                st.caption(f"🏷️ Tabela: **{cli.get('tabela', 'Varejo')}**")
                             with c_c2:
                                 st.write(f"📱 WhatsApp: `{cli.get('whatsapp', '-')}`")
                                 st.caption(f"📍 {cli.get('endereco', 'Endereço')} (CEP: {cli.get('cep', '-')})")
                             with c_c3:
                                 num_w = re.sub(r"\D", "", str(cli.get("whatsapp", "")))
                                 if num_w:
-                                    st.markdown(f"[💬 Falar no WhatsApp](https://wa.me/55{num_w})")
-                                st.caption(f"🛒 Compras: {cli.get('total_pedidos', 0)} pedido(s)")
+                                    st.markdown(f"[💬 Falar no WhatsApp](https://wa.me/55{num_w}) &nbsp;•&nbsp; 🛒 **{cli.get('total_pedidos', 0)} pedido(s)**")
+                                else:
+                                    st.caption(f"🛒 Compras: {cli.get('total_pedidos', 0)} pedido(s)")
 
-                                with st.popover("🔑 Alterar Senha", use_container_width=True):
-                                    st.markdown(f"**🔑 Redefinir Senha de {cli['nome']}**")
-                                    nova_s_pop = st.text_input(
-                                        "Nova senha (mín. 6 caracteres)",
-                                        type="password",
-                                        key=f"pop_pw1_{idx_c_list}",
-                                        placeholder="Digite a nova senha",
-                                    )
-                                    conf_s_pop = st.text_input(
-                                        "Confirmar nova senha",
-                                        type="password",
-                                        key=f"pop_pw2_{idx_c_list}",
-                                        placeholder="Repita a nova senha",
-                                    )
-                                    if st.button("💾 Salvar Nova Senha", key=f"btn_pop_pw_{idx_c_list}", type="primary", use_container_width=True):
-                                        if not nova_s_pop or len(nova_s_pop.strip()) < 4:
-                                            st.error("Informe uma senha válida (mínimo 4 caracteres).")
-                                        elif nova_s_pop != conf_s_pop:
-                                            st.error("As senhas não conferem.")
-                                        else:
-                                            hash_novo = gerar_hash_senha(nova_s_pop.strip())
-                                            atualizou_db = False
-                                            try:
-                                                if cli.get("id"):
-                                                    supabase.table("clientes").update({"senha": hash_novo}).eq("id", cli["id"]).execute()
-                                                    atualizou_db = True
-                                                elif cli.get("cpf") and cli.get("cpf") != "Não informado":
-                                                    r_up = supabase.table("clientes").update({"senha": hash_novo}).eq("cpf_cnpj", cli["cpf"]).execute()
-                                                    if r_up.data:
-                                                        atualizou_db = True
-                                                if not atualizou_db and cli.get("email") and "@" in str(cli.get("email")):
-                                                    r_up2 = supabase.table("clientes").update({"senha": hash_novo}).ilike("email", cli["email"].strip()).execute()
-                                                    if r_up2.data:
-                                                        atualizou_db = True
-                                                if not atualizou_db:
-                                                    supabase.table("clientes").insert({
-                                                        "nome": cli["nome"],
-                                                        "cpf_cnpj": cli.get("cpf") if cli.get("cpf") != "Não informado" else None,
-                                                        "email": cli.get("email") if cli.get("email") != "Não informado" else None,
-                                                        "whatsapp": cli.get("whatsapp") if cli.get("whatsapp") != "Não informado" else None,
-                                                        "endereco_completo": cli.get("endereco"),
-                                                        "cep": cli.get("cep"),
-                                                        "senha": hash_novo,
-                                                    }).execute()
-                                            except Exception:
-                                                pass
+                                bt_ed_c1, bt_ed_c2 = st.columns(2)
 
-                                            # Atualizar também no Supabase Auth caso SERVICE_ROLE_KEY esteja configurada
-                                            srv_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY") or st.secrets.get("SUPABASE_SERVICE_ROLE")
-                                            if srv_key and cli.get("auth_uid"):
+                                # 1. POPOVER: EDITAR DADOS COMPLETOS DO CLIENTE (COM REGISTRO AUTOMÁTICO DE LOG)
+                                with bt_ed_c1:
+                                    with st.popover("✏️ Editar Dados", use_container_width=True):
+                                        st.markdown(f"#### ✏️ Editar Cadastro — {cli['nome']}")
+                                        st.caption("As alterações são salvas no Supabase e registradas automaticamente no Log de Auditoria:")
+                                        with st.form(f"form_adm_edit_cli_{idx_c_list}"):
+                                            ed_c_nome = st.text_input("Nome Completo *", value="" if cli.get("nome") == "Não informado" else str(cli.get("nome") or ""))
+                                            c_ec1, c_ec2 = st.columns(2)
+                                            ed_c_cpf = c_ec1.text_input("CPF ou CNPJ", value="" if cli.get("cpf") == "Não informado" else str(cli.get("cpf") or ""))
+                                            ed_c_whats = c_ec2.text_input("WhatsApp com DDD", value="" if cli.get("whatsapp") == "Não informado" else str(cli.get("whatsapp") or ""))
+                                            c_ec3, c_ec4 = st.columns([1.8, 1])
+                                            ed_c_email = c_ec3.text_input("E-mail", value="" if cli.get("email") == "Não informado" else str(cli.get("email") or ""))
+                                            ed_c_cep = c_ec4.text_input("CEP", value="" if cli.get("cep") == "Não informado" else str(cli.get("cep") or ""))
+                                            ed_c_end = st.text_input("Endereço Completo (Rua, Número, Comp.)", value="" if cli.get("endereco") == "Não informado" else str(cli.get("endereco") or ""))
+                                            c_ec5, c_ec6, c_ec7 = st.columns([1.3, 1.3, 0.7])
+                                            ed_c_bairro = c_ec5.text_input("Bairro", value=str(cli.get("bairro") or ""))
+                                            ed_c_cid = c_ec6.text_input("Cidade", value=str(cli.get("cidade") or "Manaus"))
+                                            ed_c_uf = c_ec7.text_input("UF", value=str(cli.get("estado") or "AM"), max_chars=2)
+
+                                            op_tabs_preco = ["Varejo", "Tabela Padrão (Varejo)", "Tabela Aluno / Cursos VIP", "Tabela Atacado Tags"]
+                                            tb_atual_c = str(cli.get("tabela") or "Varejo")
+                                            idx_tb_c = op_tabs_preco.index(tb_atual_c) if tb_atual_c in op_tabs_preco else 0
+                                            ed_c_tab = st.selectbox("Tabela de Preço", op_tabs_preco, index=idx_tb_c)
+
+                                            sync_peds_cli = st.checkbox(
+                                                "🔄 Atualizar também Nome/Contato/Endereço nos pedidos anteriores deste cliente",
+                                                value=False,
+                                            )
+
+                                            if st.form_submit_button("💾 Salvar Alterações & Registrar Log", type="primary", use_container_width=True):
+                                                if not ed_c_nome.strip():
+                                                    st.error("O nome do cliente não pode ficar vazio.")
+                                                else:
+                                                    dados_antes_cli = {
+                                                        "nome": "" if cli.get("nome") == "Não informado" else str(cli.get("nome") or ""),
+                                                        "cpf_cnpj": "" if cli.get("cpf") == "Não informado" else str(cli.get("cpf") or ""),
+                                                        "email": "" if cli.get("email") == "Não informado" else str(cli.get("email") or ""),
+                                                        "whatsapp": "" if cli.get("whatsapp") == "Não informado" else str(cli.get("whatsapp") or ""),
+                                                        "cep": "" if cli.get("cep") == "Não informado" else str(cli.get("cep") or ""),
+                                                        "endereco_completo": "" if cli.get("endereco") == "Não informado" else str(cli.get("endereco") or ""),
+                                                        "bairro": str(cli.get("bairro") or ""),
+                                                        "cidade": str(cli.get("cidade") or "Manaus"),
+                                                        "estado": str(cli.get("estado") or "AM").upper(),
+                                                        "tabela_preco": str(cli.get("tabela") or "Varejo"),
+                                                    }
+                                                    dados_novos_cli = {
+                                                        "nome": ed_c_nome.strip(),
+                                                        "cpf_cnpj": ed_c_cpf.strip(),
+                                                        "email": ed_c_email.strip().lower(),
+                                                        "whatsapp": ed_c_whats.strip(),
+                                                        "cep": ed_c_cep.strip(),
+                                                        "endereco_completo": ed_c_end.strip(),
+                                                        "bairro": ed_c_bairro.strip(),
+                                                        "cidade": ed_c_cid.strip() or "Manaus",
+                                                        "estado": (ed_c_uf.strip() or "AM").upper(),
+                                                        "tabela_preco": ed_c_tab,
+                                                    }
+
+                                                    payload_db_cli = {
+                                                        "nome": dados_novos_cli["nome"],
+                                                        "cpf_cnpj": dados_novos_cli["cpf_cnpj"] or None,
+                                                        "email": dados_novos_cli["email"] or None,
+                                                        "whatsapp": dados_novos_cli["whatsapp"] or None,
+                                                        "cep": dados_novos_cli["cep"] or None,
+                                                        "endereco_completo": dados_novos_cli["endereco_completo"] or None,
+                                                        "bairro": dados_novos_cli["bairro"] or None,
+                                                        "cidade": dados_novos_cli["cidade"] or None,
+                                                        "estado": dados_novos_cli["estado"] or None,
+                                                        "tabela_preco": dados_novos_cli["tabela_preco"],
+                                                    }
+
+                                                    salvou_cli_db = False
+                                                    try:
+                                                        if cli.get("id"):
+                                                            supabase.table("clientes").update(payload_db_cli).eq("id", cli["id"]).execute()
+                                                            salvou_cli_db = True
+                                                        elif dados_antes_cli["cpf_cnpj"]:
+                                                            r_up_c = supabase.table("clientes").update(payload_db_cli).eq("cpf_cnpj", dados_antes_cli["cpf_cnpj"]).execute()
+                                                            if r_up_c.data:
+                                                                salvou_cli_db = True
+                                                        if not salvou_cli_db and dados_antes_cli["email"]:
+                                                            r_up_e = supabase.table("clientes").update(payload_db_cli).ilike("email", dados_antes_cli["email"]).execute()
+                                                            if r_up_e.data:
+                                                                salvou_cli_db = True
+                                                        if not salvou_cli_db:
+                                                            supabase.table("clientes").insert(payload_db_cli).execute()
+                                                    except Exception:
+                                                        try:
+                                                            payload_min = {
+                                                                "nome": dados_novos_cli["nome"],
+                                                                "cpf_cnpj": dados_novos_cli["cpf_cnpj"] or None,
+                                                                "email": dados_novos_cli["email"] or None,
+                                                                "whatsapp": dados_novos_cli["whatsapp"] or None,
+                                                                "cep": dados_novos_cli["cep"] or None,
+                                                                "endereco_completo": dados_novos_cli["endereco_completo"] or None,
+                                                            }
+                                                            if cli.get("id"):
+                                                                supabase.table("clientes").update(payload_min).eq("id", cli["id"]).execute()
+                                                            else:
+                                                                supabase.table("clientes").insert(payload_min).execute()
+                                                        except Exception:
+                                                            pass
+
+                                                    if sync_peds_cli:
+                                                        try:
+                                                            up_ped_cli = {
+                                                                "cliente_nome": dados_novos_cli["nome"],
+                                                                "cliente_cpf": dados_novos_cli["cpf_cnpj"] or dados_antes_cli["cpf_cnpj"],
+                                                                "cliente_whatsapp": dados_novos_cli["whatsapp"],
+                                                                "cliente_email": dados_novos_cli["email"],
+                                                            }
+                                                            if dados_novos_cli["endereco_completo"]:
+                                                                up_ped_cli["endereco_completo"] = dados_novos_cli["endereco_completo"]
+                                                            if dados_novos_cli["cep"]:
+                                                                up_ped_cli["cep"] = dados_novos_cli["cep"]
+                                                            if cli.get("id"):
+                                                                supabase.table("pedidos").update(up_ped_cli).eq("cliente_id", cli["id"]).execute()
+                                                            elif dados_antes_cli["cpf_cnpj"]:
+                                                                supabase.table("pedidos").update(up_ped_cli).eq("cliente_cpf", dados_antes_cli["cpf_cnpj"]).execute()
+                                                        except Exception:
+                                                            pass
+
+                                                    # Atualiza cache local e sessão se o cliente editado estiver logado neste navegador
+                                                    contas_loc = st.session_state.setdefault("contas_clientes_local", {})
+                                                    for k_old in (dados_antes_cli["email"].lower(), re.sub(r"\D", "", dados_antes_cli["cpf_cnpj"])):
+                                                        if k_old and k_old in contas_loc:
+                                                            contas_loc[k_old].update(dados_novos_cli)
+                                                    if st.session_state.get("cliente_logado") and (
+                                                        st.session_state["cliente_logado"].get("id") == cli.get("id")
+                                                        or st.session_state["cliente_logado"].get("cpf_cnpj") == dados_antes_cli["cpf_cnpj"]
+                                                    ):
+                                                        st.session_state["cliente_logado"].update(dados_novos_cli)
+
+                                                    registrar_log_auditoria(
+                                                        origem="🛡️ Admin",
+                                                        autor=f"{nome_admin_logado} (Admin)",
+                                                        acao="Edição de Cadastro de Cliente",
+                                                        alvo=f"Cliente: {dados_novos_cli['nome']} (CPF: {dados_novos_cli['cpf_cnpj'] or '-'})",
+                                                        dados_antes=dados_antes_cli,
+                                                        dados_depois=dados_novos_cli,
+                                                        cliente_ref=dados_novos_cli["cpf_cnpj"] or dados_novos_cli["email"],
+                                                    )
+                                                    st.toast(f"✅ Dados de {dados_novos_cli['nome']} atualizados e log registrado!")
+                                                    st.rerun()
+
+                                # 2. POPOVER: ALTERAR SENHA DO CLIENTE
+                                with bt_ed_c2:
+                                    with st.popover("🔑 Senha", use_container_width=True):
+                                        st.markdown(f"**🔑 Redefinir Senha de {cli['nome']}**")
+                                        nova_s_pop = st.text_input(
+                                            "Nova senha (mín. 6 caracteres)",
+                                            type="password",
+                                            key=f"pop_pw1_{idx_c_list}",
+                                            placeholder="Digite a nova senha",
+                                        )
+                                        conf_s_pop = st.text_input(
+                                            "Confirmar nova senha",
+                                            type="password",
+                                            key=f"pop_pw2_{idx_c_list}",
+                                            placeholder="Repita a nova senha",
+                                        )
+                                        if st.button("💾 Salvar Nova Senha", key=f"btn_pop_pw_{idx_c_list}", type="primary", use_container_width=True):
+                                            if not nova_s_pop or len(nova_s_pop.strip()) < 4:
+                                                st.error("Informe uma senha válida (mínimo 4 caracteres).")
+                                            elif nova_s_pop != conf_s_pop:
+                                                st.error("As senhas não conferem.")
+                                            else:
+                                                hash_novo = gerar_hash_senha(nova_s_pop.strip())
+                                                atualizou_db = False
                                                 try:
-                                                    sup_adm = create_client(st.secrets["SUPABASE_URL"], srv_key)
-                                                    sup_adm.auth.admin.update_user_by_id(cli["auth_uid"], {"password": nova_s_pop.strip()})
+                                                    if cli.get("id"):
+                                                        supabase.table("clientes").update({"senha": hash_novo}).eq("id", cli["id"]).execute()
+                                                        atualizou_db = True
+                                                    elif cli.get("cpf") and cli.get("cpf") != "Não informado":
+                                                        r_up = supabase.table("clientes").update({"senha": hash_novo}).eq("cpf_cnpj", cli["cpf"]).execute()
+                                                        if r_up.data:
+                                                            atualizou_db = True
+                                                    if not atualizou_db and cli.get("email") and "@" in str(cli.get("email")):
+                                                        r_up2 = supabase.table("clientes").update({"senha": hash_novo}).ilike("email", cli["email"].strip()).execute()
+                                                        if r_up2.data:
+                                                            atualizou_db = True
+                                                    if not atualizou_db:
+                                                        supabase.table("clientes").insert({
+                                                            "nome": cli["nome"],
+                                                            "cpf_cnpj": cli.get("cpf") if cli.get("cpf") != "Não informado" else None,
+                                                            "email": cli.get("email") if cli.get("email") != "Não informado" else None,
+                                                            "whatsapp": cli.get("whatsapp") if cli.get("whatsapp") != "Não informado" else None,
+                                                            "endereco_completo": cli.get("endereco"),
+                                                            "cep": cli.get("cep"),
+                                                            "senha": hash_novo,
+                                                        }).execute()
                                                 except Exception:
                                                     pass
 
-                                            # Atualizar cache local de contas
-                                            contas_loc = st.session_state.setdefault("contas_clientes_local", {})
-                                            em_k = (cli.get("email") or "").strip().lower()
-                                            cpf_k = re.sub(r"\D", "", str(cli.get("cpf") or ""))
-                                            if em_k and em_k in contas_loc:
-                                                contas_loc[em_k]["senha"] = hash_novo
-                                            if cpf_k and cpf_k in contas_loc:
-                                                contas_loc[cpf_k]["senha"] = hash_novo
-                                            salvar_estado_persistente()
-                                            st.success(f"✅ Senha de **{cli['nome']}** alterada com sucesso!")
+                                                srv_key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY") or st.secrets.get("SUPABASE_SERVICE_ROLE")
+                                                if srv_key and cli.get("auth_uid"):
+                                                    try:
+                                                        sup_adm = create_client(st.secrets["SUPABASE_URL"], srv_key)
+                                                        sup_adm.auth.admin.update_user_by_id(cli["auth_uid"], {"password": nova_s_pop.strip()})
+                                                    except Exception:
+                                                        pass
+
+                                                contas_loc = st.session_state.setdefault("contas_clientes_local", {})
+                                                em_k = (cli.get("email") or "").strip().lower()
+                                                cpf_k = re.sub(r"\D", "", str(cli.get("cpf") or ""))
+                                                if em_k and em_k in contas_loc:
+                                                    contas_loc[em_k]["senha"] = hash_novo
+                                                if cpf_k and cpf_k in contas_loc:
+                                                    contas_loc[cpf_k]["senha"] = hash_novo
+                                                registrar_log_auditoria(
+                                                    origem="🛡️ Admin",
+                                                    autor=f"{nome_admin_logado} (Admin)",
+                                                    acao="Redefinição de Senha de Cliente",
+                                                    alvo=f"Cliente: {cli['nome']} (CPF: {cli.get('cpf', '-')})",
+                                                    alteracoes_manuais=[{"campo": "Senha de Acesso", "antes": "••••••••", "depois": "Nova senha redefinida pelo Admin"}],
+                                                    cliente_ref=str(cli.get("cpf") or cli.get("email") or ""),
+                                                )
+                                                st.success(f"✅ Senha de **{cli['nome']}** alterada e registrada no Log!")
 
             elif sub_aba_cli == "➕ Adicionar cliente":
                 # Formulário idêntico ao print do usuário (Nuvemshop: "Adicionar cliente")
@@ -5731,17 +6194,199 @@ if modo_admin_ativo:
                                         use_container_width=True,
                                     )
 
+            elif sub_aba_cli == "📜 Logs de Alterações":
+                st.markdown("### 📜 Central de Auditoria & Logs de Alterações no Banco (Exclusivo Admin)")
+                st.caption("Visão exclusiva do Administrador: os clientes **não têm acesso** a estes logs. Todos os registros são gravados na tabela relacional `public.logs_auditoria` do Supabase para que você também possa pesquisar via SQL direto no banco:")
+
+                tabela_sql_ativa = verificar_tabela_logs_supabase()
+                todos_logs_aud = obter_logs_auditoria()
+                qtd_logs_cli = len([lg for lg in todos_logs_aud if "Cliente" in str(lg.get("origem") or "")])
+                qtd_logs_adm = len([lg for lg in todos_logs_aud if "Admin" in str(lg.get("origem") or "")])
+
+                if tabela_sql_ativa:
+                    c_st_db1, c_st_db2 = st.columns([3.2, 1.3])
+                    with c_st_db1:
+                        st.success("🗄️ **Tabela `public.logs_auditoria` ATIVA no Supabase!** Todos os logs estão sendo gravados como linhas relacionais no seu banco de dados para consultas SQL.")
+                    with c_st_db2:
+                        if st.button("🔄 Sincronizar p/ Tabela SQL", key="btn_sync_logs_to_sql", use_container_width=True, help="Envia qualquer log salvo em cache para a tabela public.logs_auditoria do Supabase"):
+                            enviados_sql = 0
+                            for lg_m in (st.session_state.get("config_loja", {}).get("logs_auditoria") or []):
+                                if isinstance(lg_m, dict) and lg_m.get("uid"):
+                                    try:
+                                        supabase.table("logs_auditoria").upsert({
+                                            "log_uid": lg_m["uid"],
+                                            "data_hora": lg_m.get("data_hora", ""),
+                                            "origem": lg_m.get("origem", "🛡️ Admin"),
+                                            "autor": lg_m.get("autor", "Sistema"),
+                                            "acao": lg_m.get("acao", "Alteração"),
+                                            "tabela_afetada": lg_m.get("tabela_afetada", "clientes"),
+                                            "registro_id": lg_m.get("registro_id"),
+                                            "alvo": lg_m.get("alvo", ""),
+                                            "cliente_ref": lg_m.get("cliente_ref", ""),
+                                            "alteracoes": lg_m.get("alteracoes", []),
+                                        }, on_conflict="log_uid").execute()
+                                        enviados_sql += 1
+                                    except Exception:
+                                        pass
+                            st.toast(f"✅ {enviados_sql} log(s) sincronizados com a tabela public.logs_auditoria!")
+                            st.rerun()
+                else:
+                    st.warning("⚠️ A tabela `public.logs_auditoria` ainda não foi criada no seu Supabase (os logs estão salvos temporariamente em `config_loja`). Execute o bloco SQL abaixo no **SQL Editor** do Supabase para ativar a tabela relacional de logs e os Triggers automáticos de banco:")
+
+                with st.expander("🗄️ Ver Script SQL da Tabela `public.logs_auditoria` + Consultas SQL para Gerenciamento de Banco"):
+                    st.markdown("**1. Criar a tabela `public.logs_auditoria` + Trigger Automático no Supabase SQL Editor:**")
+                    st.code(
+                        """CREATE TABLE IF NOT EXISTS public.logs_auditoria (
+    id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    log_uid TEXT UNIQUE,
+    data_hora TEXT,
+    origem TEXT,
+    autor TEXT,
+    acao TEXT,
+    tabela_afetada TEXT DEFAULT 'clientes',
+    registro_id BIGINT,
+    alvo TEXT,
+    cliente_ref TEXT,
+    alteracoes JSONB DEFAULT '[]'::jsonb,
+    dados_antes JSONB DEFAULT '{}'::jsonb,
+    dados_depois JSONB DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_logs_auditoria_created_at ON public.logs_auditoria (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_logs_auditoria_cliente_ref ON public.logs_auditoria (cliente_ref);
+CREATE INDEX IF NOT EXISTS idx_logs_auditoria_origem ON public.logs_auditoria (origem);""",
+                        language="sql",
+                    )
+                    st.markdown("**2. Exemplos de pesquisas SQL que você pode rodar direto no Supabase SQL Editor:**")
+                    st.code(
+                        """-- A) Ver todas as alterações feitas por CLIENTES:
+SELECT id, created_at, autor, acao, alvo, alteracoes
+FROM public.logs_auditoria
+WHERE origem ILIKE '%Cliente%'
+ORDER BY created_at DESC;
+
+-- B) Ver todas as alterações feitas pelo ADMIN:
+SELECT id, created_at, autor, acao, alvo, alteracoes
+FROM public.logs_auditoria
+WHERE origem ILIKE '%Admin%'
+ORDER BY created_at DESC;
+
+-- C) Pesquisar histórico completo de um cliente específico por CPF ou E-mail:
+SELECT id, data_hora, origem, autor, acao, alteracoes
+FROM public.logs_auditoria
+WHERE cliente_ref ILIKE '%690%' OR alvo ILIKE '%Maria%'
+ORDER BY id DESC;""",
+                        language="sql",
+                    )
+
+                ml1, ml2, ml3 = st.columns(3)
+                ml1.metric("📜 Total de Logs Gravados", len(todos_logs_aud))
+                ml2.metric("👤 Alterações feitas por Clientes", qtd_logs_cli)
+                ml3.metric("🛡️ Alterações feitas pelo Admin", qtd_logs_adm)
+
+                c_fl1, c_fl2, c_fl3 = st.columns([1.6, 2.2, 1.2])
+                with c_fl1:
+                    filtro_origem_log = st.selectbox(
+                        "Filtrar por Quem Alterou:",
+                        ["Todos (Clientes + Admin)", "👤 Somente Clientes", "🛡️ Somente Admin"],
+                        key="sel_filtro_origem_log",
+                    )
+                with c_fl2:
+                    busca_txt_log = st.text_input(
+                        "🔍 Buscar por Nome do Cliente, CPF, Pedido ou Campo alterado:",
+                        placeholder="Ex: Maria, Endereço, CPF, Pedido #10...",
+                        key="inp_busca_txt_log",
+                    )
+                with c_fl3:
+                    st.write("")
+                    if todos_logs_aud:
+                        linhas_csv_log = ["Data_Hora;Origem;Autor;Acao;Alvo;Alteracoes"]
+                        for lg_x in todos_logs_aud:
+                            res_alt_s = " | ".join(
+                                [f"{a.get('campo')}: '{a.get('antes')}' -> '{a.get('depois')}'" for a in (lg_x.get("alteracoes") or []) if isinstance(a, dict)]
+                            ).replace(";", ",")
+                            linhas_csv_log.append(
+                                f"{lg_x.get('data_hora','')};{lg_x.get('origem','')};{lg_x.get('autor','')};{lg_x.get('acao','')};{str(lg_x.get('alvo','')).replace(';',',')};{res_alt_s}"
+                            )
+                        csv_logs_bytes = ("\ufeff" + "\n".join(linhas_csv_log)).encode("utf-8-sig")
+                        st.download_button(
+                            "📥 Exportar Logs (.csv)",
+                            data=csv_logs_bytes,
+                            file_name=f"logs_auditoria_tagsinfor_{datetime.now().strftime('%Y%m%d')}.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
+
+                logs_filtrados = []
+                for lg_item in todos_logs_aud:
+                    orig_s = str(lg_item.get("origem") or "")
+                    if filtro_origem_log == "👤 Somente Clientes" and "Cliente" not in orig_s:
+                        continue
+                    if filtro_origem_log == "🛡️ Somente Admin" and "Admin" not in orig_s:
+                        continue
+                    if busca_txt_log.strip():
+                        t_b = busca_txt_log.strip().lower()
+                        blob_lg = f"{lg_item.get('autor','')} {lg_item.get('acao','')} {lg_item.get('alvo','')} {json.dumps(lg_item.get('alteracoes',[]), ensure_ascii=False)}".lower()
+                        if t_b not in blob_lg:
+                            continue
+                    logs_filtrados.append(lg_item)
+
+                if not logs_filtrados:
+                    with st.container(border=True):
+                        st.info("ℹ️ Nenhum log de alteração encontrado para este filtro. Assim que um cliente atualizar os próprios dados em 'Minha Conta' ou você editar um cliente/pedido no Admin, o registro Antes ➜ Depois aparecerá aqui automaticamente!")
+                else:
+                    for lg_v in logs_filtrados[:100]:
+                        eh_cli_lg = "Cliente" in str(lg_v.get("origem") or "")
+                        cor_b_lg = "#2563EB" if eh_cli_lg else "#7C3AED"
+                        bg_b_lg = "#EFF6FF" if eh_cli_lg else "#F5F3FF"
+                        bd_b_lg = "#BFDBFE" if eh_cli_lg else "#DDD6FE"
+
+                        linhas_diff_html = ""
+                        for alt_d in (lg_v.get("alteracoes") or []):
+                            if isinstance(alt_d, dict):
+                                cmp_e = html.escape(str(alt_d.get("campo") or "Campo"))
+                                ant_e = html.escape(str(alt_d.get("antes") or "(vazio)"))
+                                dep_e = html.escape(str(alt_d.get("depois") or "(vazio)"))
+                                linhas_diff_html += (
+                                    f"<div style='padding:5px 10px; background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; margin-top:5px; font-size:0.82rem;'>"
+                                    f"🔹 <b style='color:#0F172A;'>{cmp_e}:</b> "
+                                    f"<span style='color:#DC2626; background:#FEF2F2; padding:1px 6px; border-radius:5px; text-decoration:line-through;'>{ant_e}</span> "
+                                    f"➜ <span style='color:#047857; background:#ECFDF5; padding:1px 6px; border-radius:5px; font-weight:700;'>{dep_e}</span>"
+                                    f"</div>"
+                                )
+
+                        st.markdown(
+                            f"""
+                            <div style="background:#F8FAFC; border:1px solid #CBD5E1; border-left:5px solid {cor_b_lg}; border-radius:12px; padding:12px 16px; margin-bottom:10px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:6px;">
+                                    <div>
+                                        <span style="background:{bg_b_lg}; color:{cor_b_lg}; border:1px solid {bd_b_lg}; padding:2px 9px; border-radius:999px; font-weight:800; font-size:0.75rem;">
+                                            {html.escape(str(lg_v.get('origem', 'Log')))}
+                                        </span>
+                                        &nbsp;<b style="color:#0F172A; font-size:0.95rem;">{html.escape(str(lg_v.get('acao', 'Alteração')))}</b>
+                                        &nbsp;—&nbsp;<span style="color:#334155; font-weight:700; font-size:0.86rem;">{html.escape(str(lg_v.get('alvo', '')))}</span>
+                                    </div>
+                                    <div style="font-size:0.78rem; color:#475569; font-weight:700;">
+                                        🕒 {html.escape(str(lg_v.get('data_hora', '')))} &nbsp;|&nbsp; ✍️ Autor: <b>{html.escape(str(lg_v.get('autor', '')))}</b>
+                                    </div>
+                                </div>
+                                {linhas_diff_html}
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
         # =================================================================
-        # 6. ABA CRIAR CUPOM (DESCONTOS - IDÊNTICO AO SEU PRINT)
+        # 6. ABA CRIAR E GERENCIAR CUPONS (CRIAR, EDITAR, ATIVAR/DESATIVAR E EXCLUIR)
         # =================================================================
         elif aba_admin == "🎟️ Criar cupom":
             opcoes_cup = ["➕ Novo cupom", "📋 Cupons ativos"]
             if "sub_aba_cup" not in st.session_state or st.session_state["sub_aba_cup"] not in opcoes_cup:
-                st.session_state["sub_aba_cup"] = "➕ Novo cupom"
+                st.session_state["sub_aba_cup"] = "📋 Cupons ativos"
 
-            st.markdown('<h1 class="admin-page-title">Criar cupom de desconto</h1>', unsafe_allow_html=True)
+            st.markdown('<h1 class="admin-page-title">Cupons de Desconto — Criar, Editar, Ativar & Pausar</h1>', unsafe_allow_html=True)
 
-            col_cp_b1, col_cp_b2, _ = st.columns([1.4, 1.4, 3])
+            col_cp_b1, col_cp_b2, _ = st.columns([1.4, 1.8, 2.6])
             with col_cp_b1:
                 st.button(
                     "➕ Novo cupom",
@@ -5753,7 +6398,7 @@ if modo_admin_ativo:
                 )
             with col_cp_b2:
                 st.button(
-                    "📋 Cupons ativos",
+                    "📋 Gerenciar Cupons (Ativar / Editar)",
                     key="btn_tab_cup_list",
                     type="primary" if st.session_state["sub_aba_cup"] == "📋 Cupons ativos" else "secondary",
                     use_container_width=True,
@@ -5762,6 +6407,7 @@ if modo_admin_ativo:
                 )
 
             sub_aba_cup = st.session_state["sub_aba_cup"]
+            lista_cupons_adm = carregar_todos_cupons_loja()
 
             if sub_aba_cup == "➕ Novo cupom":
                 with st.form("form_criar_cupom_nuvem", clear_on_submit=True):
@@ -5777,12 +6423,13 @@ if modo_admin_ativo:
                         tipo_desc_in = st.radio("Modalidade", ["Porcentagem (%)", "Valor fixo (R$)", "Frete grátis"], horizontal=True)
                         val_desc_in = st.number_input("Valor do desconto *", min_value=0.0, value=10.0, step=1.0)
 
-                    # CARD 3: LIMITES DE USO
+                    # CARD 3: LIMITES DE USO E STATUS INICIAL
                     with st.container(border=True):
-                        st.markdown('<div class="nuvem-card-title">Limites de uso</div>', unsafe_allow_html=True)
-                        min_carrinho_in = st.number_input("Valor mínimo do pedido para aplicar o cupom (R$)", min_value=0.0, value=0.0, step=10.0)
-                        limite_usos = st.number_input("Quantidade máxima de utilizações (0 = Ilimitado)", min_value=0, value=100, step=10)
-                        uso_unico = st.checkbox("Limitar a 1 uso por cliente", value=True)
+                        st.markdown('<div class="nuvem-card-title">Limites de uso & Status</div>', unsafe_allow_html=True)
+                        c_lim1, c_lim2 = st.columns(2)
+                        min_carrinho_in = c_lim1.number_input("Valor mínimo do pedido para aplicar o cupom (R$)", min_value=0.0, value=0.0, step=10.0)
+                        limite_usos = c_lim2.number_input("Quantidade máxima de utilizações (0 = Ilimitado)", min_value=0, value=0, step=10)
+                        at_inicial_cp = st.checkbox("🟢 Já criar este cupom ATIVO para uso imediato na loja", value=True)
 
                     col_cp1, col_cp2 = st.columns([3.8, 1.2])
                     if col_cp2.form_submit_button("Criar cupom", type="primary", use_container_width=True):
@@ -5796,46 +6443,194 @@ if modo_admin_ativo:
                                 "valor": float(val_desc_in),
                                 "min_carrinho": float(min_carrinho_in),
                                 "limite_usos": int(limite_usos),
-                                "ativo": True,
+                                "usos_atuais": 0,
+                                "ativo": bool(at_inicial_cp),
                             }
                             try:
-                                supabase.table("cupons").insert(novo_cp_dict).execute()
+                                r_ins_c = supabase.table("cupons").upsert(novo_cp_dict, on_conflict="codigo").execute()
+                                if r_ins_c.data and r_ins_c.data[0].get("id"):
+                                    novo_cp_dict["id"] = r_ins_c.data[0]["id"]
                             except Exception:
                                 pass
-                            st.session_state["cupons"].append(novo_cp_dict)
-                            st.success(f"🎉 Cupom **{cod_cupom_in}** criado com sucesso! Já pode ser usado pelos clientes.")
+                            lista_cupons_adm = [c for c in lista_cupons_adm if str(c.get("codigo", "")).upper() != cod_cupom_in]
+                            lista_cupons_adm.insert(0, novo_cp_dict)
+                            salvar_lista_cupons_loja(lista_cupons_adm)
+                            st.success(f"🎉 Cupom **{cod_cupom_in}** criado com sucesso!")
                             st.session_state["sub_aba_cup"] = "📋 Cupons ativos"
                             st.rerun()
 
             elif sub_aba_cup == "📋 Cupons ativos":
-                st.caption(f"Total de {len(st.session_state['cupons'])} cupons configurados")
-                for i, c_item in enumerate(st.session_state["cupons"]):
+                qtd_cp_ativos = len([c for c in lista_cupons_adm if c.get("ativo", True)])
+                qtd_cp_pausados = len(lista_cupons_adm) - qtd_cp_ativos
+
+                mc_p1, mc_p2, mc_p3 = st.columns(3)
+                mc_p1.metric("🎟️ Total de Cupons", len(lista_cupons_adm))
+                mc_p2.metric("🟢 Cupons Ativos na Loja", qtd_cp_ativos)
+                mc_p3.metric("🔴 Cupons Pausados / Inativos", qtd_cp_pausados)
+                st.caption("Você pode **Ativar ou Desativar (Pausar)** qualquer cupom com 1 clique ou clicar em **✏️ Editar Cupom** para alterar código, desconto, valor mínimo e limite de usos:")
+
+                for i, c_item in enumerate(list(lista_cupons_adm)):
+                    cod_atual_cp = str(c_item.get("codigo") or "").strip().upper()
+                    esta_ativo_cp = bool(c_item.get("ativo", True))
+                    tipo_s = c_item.get("tipo", "Porcentagem")
+                    val_num_cp = float(c_item.get("valor") or 0.0)
+                    min_val = float(c_item.get("min_carrinho") or 0.0)
+                    lim_val = int(c_item.get("limite_usos") or 0)
+                    usos_val = int(c_item.get("usos_atuais") or 0)
+
+                    if tipo_s == "Porcentagem":
+                        val_s = f"{val_num_cp:.0f}% OFF"
+                    elif tipo_s == "Valor fixo":
+                        val_s = f"R$ {val_num_cp:.2f} OFF"
+                    else:
+                        val_s = "Frete Grátis"
+
+                    cor_bg_cp = "#DCFCE7" if esta_ativo_cp else "#F1F5F9"
+                    cor_tx_cp = "#15803D" if esta_ativo_cp else "#64748B"
+                    badge_status_cp = (
+                        "<span style='background:#ECFDF5; color:#047857; border:1px solid #6EE7B7; padding:2px 9px; border-radius:999px; font-size:0.74rem; font-weight:800;'>🟢 ATIVO</span>"
+                        if esta_ativo_cp
+                        else "<span style='background:#FEF2F2; color:#DC2626; border:1px solid #FECACA; padding:2px 9px; border-radius:999px; font-size:0.74rem; font-weight:800;'>🔴 DESATIVADO / PAUSADO</span>"
+                    )
+
                     with st.container(border=True):
-                        c_cp1, c_cp2, c_cp3 = st.columns([3, 3, 2])
+                        c_cp1, c_cp2, c_cp3 = st.columns([2.7, 2.3, 2.6], vertical_alignment="center")
                         with c_cp1:
-                            tipo_s = c_item.get("tipo", "Porcentagem")
-                            if tipo_s == "Porcentagem":
-                                val_s = f"{c_item['valor']:.0f}% OFF"
-                            elif tipo_s == "Valor fixo":
-                                val_s = f"R$ {c_item['valor']:.2f} OFF"
-                            else:
-                                val_s = "Frete Grátis"
-                            st.markdown(f"🏷️ **Cupom:** <span style='background:#DCFCE7; color:#15803D; font-weight:800; padding:4px 8px; border-radius:6px;'>{c_item['codigo']}</span> — **{val_s}**", unsafe_allow_html=True)
+                            st.markdown(
+                                f"🏷️ **Cupom:** <span style='background:{cor_bg_cp}; color:{cor_tx_cp}; font-weight:800; padding:4px 10px; border-radius:6px;'>{html.escape(cod_atual_cp)}</span> "
+                                f"— **{val_s}** &nbsp;{badge_status_cp}",
+                                unsafe_allow_html=True,
+                            )
                         with c_cp2:
-                            min_val = c_item.get("min_carrinho", 0)
-                            if min_val > 0:
-                                st.write(f"Válido para pedidos a partir de R$ {min_val:.2f}")
-                            else:
-                                st.write("Válido para qualquer valor de pedido")
+                            txt_min_cp = f"Pedidos a partir de **R$ {min_val:.2f}**" if min_val > 0 else "Qualquer valor de pedido"
+                            txt_lim_cp = f"**{usos_val} / {lim_val}** usos" if lim_val > 0 else f"**{usos_val}** uso(s) (Ilimitado)"
+                            st.markdown(f"🛒 {txt_min_cp}<br><span style='font-size:0.79rem; color:#475569;'>📊 Utilizações: {txt_lim_cp}</span>", unsafe_allow_html=True)
                         with c_cp3:
-                            if st.button("🗑️ Excluir Cupom", key=f"del_cup_{i}", use_container_width=True):
-                                try:
-                                    supabase.table("cupons").delete().eq("codigo", c_item.get("codigo")).execute()
-                                except Exception:
-                                    pass
-                                st.session_state["cupons"].pop(i)
-                                st.success("Cupom removido!")
-                                st.rerun()
+                            b_cp_act1, b_cp_act2, b_cp_act3 = st.columns([1.15, 1.15, 0.85])
+
+                            # 1. BOTÃO 1-CLIQUE: ATIVAR / DESATIVAR CUPOM QUANDO QUISER
+                            with b_cp_act1:
+                                rotulo_toggle_cp = "⏸️ Desativar" if esta_ativo_cp else "▶️ Ativar"
+                                tipo_btn_tg = "secondary" if esta_ativo_cp else "primary"
+                                if st.button(rotulo_toggle_cp, key=f"btn_tg_cup_{i}_{cod_atual_cp}", type=tipo_btn_tg, use_container_width=True):
+                                    novo_st_cp = not esta_ativo_cp
+                                    lista_cupons_adm[i]["ativo"] = novo_st_cp
+                                    try:
+                                        if c_item.get("id"):
+                                            supabase.table("cupons").update({"ativo": novo_st_cp}).eq("id", c_item["id"]).execute()
+                                        else:
+                                            supabase.table("cupons").update({"ativo": novo_st_cp}).eq("codigo", cod_atual_cp).execute()
+                                    except Exception:
+                                        pass
+                                    salvar_lista_cupons_loja(lista_cupons_adm)
+                                    registrar_log_auditoria(
+                                        origem="🛡️ Admin",
+                                        autor="Administrador",
+                                        acao=f"{'Ativação' if novo_st_cp else 'Desativação'} de Cupom ({cod_atual_cp})",
+                                        alvo=f"Cupom: {cod_atual_cp}",
+                                        alteracoes_manuais=[{
+                                            "campo": "Status do Cupom",
+                                            "antes": "🟢 Ativo" if esta_ativo_cp else "🔴 Desativado",
+                                            "depois": "🟢 Ativo" if novo_st_cp else "🔴 Desativado",
+                                        }],
+                                        tabela_afetada="cupons",
+                                        registro_id=c_item.get("id"),
+                                    )
+                                    st.toast(f"{'🟢 Cupom ATIVADO' if novo_st_cp else '🔴 Cupom DESATIVADO'}: {cod_atual_cp}!")
+                                    st.rerun()
+
+                            # 2. POPOVER: EDITAR CUPOM CRIADO
+                            with b_cp_act2:
+                                with st.popover("✏️ Editar", use_container_width=True):
+                                    st.markdown(f"#### ✏️ Editar Cupom `{cod_atual_cp}`")
+                                    with st.form(f"form_ed_cupom_{i}_{cod_atual_cp}"):
+                                        ed_cp_cod = st.text_input("Código do Cupom *", value=cod_atual_cp).strip().upper()
+                                        op_tipos_cp = ["Porcentagem", "Valor fixo", "Frete grátis"]
+                                        idx_tp_cp = op_tipos_cp.index(tipo_s) if tipo_s in op_tipos_cp else 0
+                                        ed_cp_tipo = st.selectbox(
+                                            "Tipo de Desconto",
+                                            op_tipos_cp,
+                                            index=idx_tp_cp,
+                                            format_func=lambda t_x: "Porcentagem (%)" if t_x == "Porcentagem" else ("Valor fixo (R$)" if t_x == "Valor fixo" else "Frete grátis"),
+                                        )
+                                        c_ecp1, c_ecp2 = st.columns(2)
+                                        ed_cp_val = c_ecp1.number_input("Valor do Desconto *", min_value=0.0, value=float(val_num_cp), step=1.0)
+                                        ed_cp_min = c_ecp2.number_input("Pedido Mínimo (R$)", min_value=0.0, value=float(min_val), step=10.0)
+
+                                        c_ecp3, c_ecp4 = st.columns(2)
+                                        ed_cp_lim = c_ecp3.number_input("Limite de Usos (0 = Ilimitado)", min_value=0, value=int(lim_val), step=5)
+                                        ed_cp_usos = c_ecp4.number_input("Usos Atuais (pode zerar)", min_value=0, value=int(usos_val), step=1)
+
+                                        ed_cp_ativo = st.checkbox("🟢 Cupom Ativo na Loja", value=esta_ativo_cp)
+
+                                        if st.form_submit_button("💾 Salvar Alterações do Cupom", type="primary", use_container_width=True):
+                                            if not ed_cp_cod:
+                                                st.error("O código do cupom não pode ficar vazio.")
+                                            else:
+                                                dados_up_cp = {
+                                                    "codigo": ed_cp_cod,
+                                                    "tipo": ed_cp_tipo,
+                                                    "valor": float(ed_cp_val),
+                                                    "min_carrinho": float(ed_cp_min),
+                                                    "limite_usos": int(ed_cp_lim),
+                                                    "usos_atuais": int(ed_cp_usos),
+                                                    "ativo": bool(ed_cp_ativo),
+                                                }
+                                                try:
+                                                    if c_item.get("id"):
+                                                        supabase.table("cupons").update(dados_up_cp).eq("id", c_item["id"]).execute()
+                                                    else:
+                                                        r_u_cp = supabase.table("cupons").update(dados_up_cp).eq("codigo", cod_atual_cp).execute()
+                                                        if not r_u_cp.data:
+                                                            r_i_cp = supabase.table("cupons").upsert(dados_up_cp, on_conflict="codigo").execute()
+                                                            if r_i_cp.data and r_i_cp.data[0].get("id"):
+                                                                dados_up_cp["id"] = r_i_cp.data[0]["id"]
+                                                except Exception:
+                                                    pass
+                                                if c_item.get("id"):
+                                                    dados_up_cp["id"] = c_item["id"]
+                                                registrar_log_auditoria(
+                                                    origem="🛡️ Admin",
+                                                    autor="Administrador",
+                                                    acao=f"Edição do Cupom {cod_atual_cp}",
+                                                    alvo=f"Cupom: {ed_cp_cod}",
+                                                    dados_antes={
+                                                        "codigo": cod_atual_cp,
+                                                        "tipo": tipo_s,
+                                                        "valor": f"{val_num_cp:.2f}",
+                                                        "min_carrinho": f"R$ {min_val:.2f}",
+                                                        "limite_usos": str(lim_val),
+                                                        "ativo": "Ativo" if esta_ativo_cp else "Pausado",
+                                                    },
+                                                    dados_depois={
+                                                        "codigo": ed_cp_cod,
+                                                        "tipo": ed_cp_tipo,
+                                                        "valor": f"{float(ed_cp_val):.2f}",
+                                                        "min_carrinho": f"R$ {float(ed_cp_min):.2f}",
+                                                        "limite_usos": str(int(ed_cp_lim)),
+                                                        "ativo": "Ativo" if ed_cp_ativo else "Pausado",
+                                                    },
+                                                    tabela_afetada="cupons",
+                                                    registro_id=c_item.get("id"),
+                                                )
+                                                lista_cupons_adm[i] = dados_up_cp
+                                                salvar_lista_cupons_loja(lista_cupons_adm)
+                                                st.toast(f"✅ Cupom {ed_cp_cod} atualizado com sucesso!")
+                                                st.rerun()
+
+                            # 3. BOTÃO: EXCLUIR CUPOM
+                            with b_cp_act3:
+                                if st.button("🗑️", key=f"del_cup_{i}_{cod_atual_cp}", help=f"Excluir cupom {cod_atual_cp}", use_container_width=True):
+                                    try:
+                                        if c_item.get("id"):
+                                            supabase.table("cupons").delete().eq("id", c_item["id"]).execute()
+                                        supabase.table("cupons").delete().eq("codigo", cod_atual_cp).execute()
+                                    except Exception:
+                                        pass
+                                    lista_cupons_adm.pop(i)
+                                    salvar_lista_cupons_loja(lista_cupons_adm)
+                                    st.success(f"Cupom {cod_atual_cp} removido!")
+                                    st.rerun()
 
         # =================================================================
         # 7. ABA VENDAS & PEDIDOS
@@ -5865,28 +6660,211 @@ if modo_admin_ativo:
             if not lista_ped:
                 st.info("Nenhuma venda registrada até o momento.")
             else:
-                m1, m2, m3, m4 = st.columns(4)
-                peds_validos_v = [p for p in lista_ped if str(p.get("status_pagamento") or "pendente").lower() != "cancelado"]
-                fat = sum(float(p["valor_total"]) for p in peds_validos_v)
-                custo_tot_v = 0.0
-                for p_v in peds_validos_v:
-                    for it_v in (p_v.get("itens") or []):
+                # Função auxiliar para extrair datetime local de cada pedido (ajustando UTC-4 Manaus quando vier em UTC)
+                nomes_meses_pt = {
+                    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+                    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+                    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
+                }
+                nomes_dias_sem_pt = {
+                    0: "Segunda-feira", 1: "Terça-feira", 2: "Quarta-feira",
+                    3: "Quinta-feira", 4: "Sexta-feira", 5: "Sábado", 6: "Domingo",
+                }
+                agora_dt = datetime.now()
+
+                def _extrair_dt_pedido(p_obj: dict) -> datetime:
+                    raw_dt = str(p_obj.get("created_at") or "").strip()
+                    if raw_dt:
+                        try:
+                            s_clean = raw_dt.replace("Z", "+00:00")
+                            dt_parsed = datetime.fromisoformat(s_clean)
+                            if dt_parsed.tzinfo is not None:
+                                # Converte para horário local (Manaus UTC-4) e remove tzinfo para comparação simples
+                                dt_parsed = (dt_parsed - dt_parsed.utcoffset() - timedelta(hours=4)).replace(tzinfo=None)
+                            return dt_parsed
+                        except Exception:
+                            try:
+                                return datetime.strptime(raw_dt[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+                            except Exception:
+                                pass
+                    return agora_dt
+
+                for _p_dt in lista_ped:
+                    _p_dt["_dt_local"] = _extrair_dt_pedido(_p_dt)
+
+                # Coleta anos disponíveis nos pedidos para o seletor de Ano
+                anos_disponiveis = sorted({p["_dt_local"].year for p in lista_ped} | {agora_dt.year}, reverse=True)
+
+                # =========================================================================
+                # BARRA DE FILTROS E ORGANIZAÇÃO POR DATA (SEMANA ATUAL, MÊS, ANO, BUSCA)
+                # =========================================================================
+                with st.container(border=True):
+                    cf_p1, cf_p2, cf_p3, cf_p4 = st.columns([1.6, 1.35, 1.35, 1.5])
+                    with cf_p1:
+                        opcoes_periodo_vp = [
+                            "📅 Todos os Pedidos",
+                            "📍 Hoje",
+                            "📆 Semana Atual (Esta Semana)",
+                            "🗓️ Mês Atual",
+                            "🗓️ Escolher Mês / Ano",
+                            "📊 Ano Atual",
+                            "📊 Escolher Ano",
+                            "🎯 Intervalo de Datas (De / Até)",
+                        ]
+                        periodo_sel_vp = st.selectbox(
+                            "📅 Filtrar por Período / Data:",
+                            opcoes_periodo_vp,
+                            index=0,
+                            key="vp_filtro_periodo",
+                        )
+                    with cf_p2:
+                        opcoes_status_vp = [
+                            "Todos os Status",
+                            "🕒 Pendentes (Aguardando Pagamento)",
+                            "✅ Pagos / Separando",
+                            "🏢 Prontos p/ Retirada / 🚚 Enviados",
+                            "🎉 Concluídos (Entregues / Retirados)",
+                            "❌ Cancelados",
+                        ]
+                        status_sel_vp = st.selectbox(
+                            "📌 Filtrar por Status:",
+                            opcoes_status_vp,
+                            index=0,
+                            key="vp_filtro_status",
+                        )
+                    with cf_p3:
+                        agrupamento_sel_vp = st.selectbox(
+                            "🗂️ Organizar / Separar Lista por:",
+                            [
+                                "📅 Separar por Data (Dia a Dia)",
+                                "🗓️ Separar por Mês e Ano",
+                                "📆 Separar por Semana",
+                                "📋 Lista Contínua (Sem Separador)",
+                            ],
+                            index=0,
+                            key="vp_agrupamento_lista",
+                        )
+                    with cf_p4:
+                        busca_ped_vp = st.text_input(
+                            "🔍 Buscar Pedido (#, Cliente, CPF, Item):",
+                            placeholder="Ex: #10, Maria, Mousepad...",
+                            key="vp_busca_texto",
+                        )
+
+                    # Seletores extras conforme a modalidade de período escolhida
+                    mes_escolhido_vp = agora_dt.month
+                    ano_escolhido_vp = agora_dt.year
+                    dt_ini_custom = agora_dt.date() - timedelta(days=30)
+                    dt_fim_custom = agora_dt.date()
+
+                    if periodo_sel_vp == "🗓️ Escolher Mês / Ano":
+                        cm_e1, cm_e2, _ = st.columns([1.4, 1.2, 2.4])
+                        with cm_e1:
+                            mes_escolhido_vp = st.selectbox(
+                                "Selecione o Mês:",
+                                options=list(range(1, 13)),
+                                index=agora_dt.month - 1,
+                                format_func=lambda m_num: f"{m_num:02d} — {nomes_meses_pt.get(m_num, '')}",
+                                key="vp_sel_mes_esp",
+                            )
+                        with cm_e2:
+                            ano_escolhido_vp = st.selectbox(
+                                "Selecione o Ano:",
+                                options=anos_disponiveis,
+                                index=0,
+                                key="vp_sel_ano_mes_esp",
+                            )
+                    elif periodo_sel_vp == "📊 Escolher Ano":
+                        ca_e1, _ = st.columns([1.4, 3.6])
+                        with ca_e1:
+                            ano_escolhido_vp = st.selectbox(
+                                "Selecione o Ano:",
+                                options=anos_disponiveis,
+                                index=0,
+                                key="vp_sel_ano_esp",
+                            )
+                    elif periodo_sel_vp == "🎯 Intervalo de Datas (De / Até)":
+                        cd_i1, cd_i2, _ = st.columns([1.4, 1.4, 2.2])
+                        with cd_i1:
+                            dt_ini_custom = st.date_input("Data Inicial:", value=dt_ini_custom, key="vp_dt_ini")
+                        with cd_i2:
+                            dt_fim_custom = st.date_input("Data Final:", value=dt_fim_custom, key="vp_dt_fim")
+
+                # Aplica o filtro de data, status e busca nos pedidos
+                inicio_semana_atual = (agora_dt - timedelta(days=agora_dt.weekday())).date()
+                fim_semana_atual = inicio_semana_atual + timedelta(days=6)
+
+                lista_ped_filtrada = []
+                for p_f in lista_ped:
+                    dt_p = p_f["_dt_local"]
+                    d_p = dt_p.date()
+
+                    # 1. Filtro de Período
+                    if periodo_sel_vp == "📍 Hoje" and d_p != agora_dt.date():
+                        continue
+                    elif periodo_sel_vp == "📆 Semana Atual (Esta Semana)" and not (inicio_semana_atual <= d_p <= fim_semana_atual):
+                        continue
+                    elif periodo_sel_vp == "🗓️ Mês Atual" and not (dt_p.year == agora_dt.year and dt_p.month == agora_dt.month):
+                        continue
+                    elif periodo_sel_vp == "🗓️ Escolher Mês / Ano" and not (dt_p.year == ano_escolhido_vp and dt_p.month == mes_escolhido_vp):
+                        continue
+                    elif periodo_sel_vp == "📊 Ano Atual" and dt_p.year != agora_dt.year:
+                        continue
+                    elif periodo_sel_vp == "📊 Escolher Ano" and dt_p.year != ano_escolhido_vp:
+                        continue
+                    elif periodo_sel_vp == "🎯 Intervalo de Datas (De / Até)" and not (dt_ini_custom <= d_p <= dt_fim_custom):
+                        continue
+
+                    # 2. Filtro de Status
+                    st_p_low = str(p_f.get("status_pagamento") or "pendente").lower()
+                    if status_sel_vp == "🕒 Pendentes (Aguardando Pagamento)" and st_p_low != "pendente":
+                        continue
+                    elif status_sel_vp == "✅ Pagos / Separando" and st_p_low != "pago":
+                        continue
+                    elif status_sel_vp == "🏢 Prontos p/ Retirada / 🚚 Enviados" and st_p_low not in ("pronto_retirada", "enviado"):
+                        continue
+                    elif status_sel_vp == "🎉 Concluídos (Entregues / Retirados)" and st_p_low != "entregue":
+                        continue
+                    elif status_sel_vp == "❌ Cancelados" and st_p_low != "cancelado":
+                        continue
+
+                    # 3. Filtro de Busca por Texto
+                    if busca_ped_vp.strip():
+                        t_vp = busca_ped_vp.strip().lower().lstrip("#")
+                        itens_str_b = " ".join(str(i.get("titulo", "")) for i in (p_f.get("itens") or []) if isinstance(i, dict))
+                        alvo_b = f"{p_f.get('id','')} {p_f.get('cliente_nome','')} {p_f.get('cliente_cpf','')} {p_f.get('cliente_whatsapp','')} {p_f.get('cliente_email','')} {itens_str_b}".lower()
+                        if t_vp not in alvo_b:
+                            continue
+
+                    lista_ped_filtrada.append(p_f)
+
+                # Função auxiliar para calcular o custo de um pedido específico
+                def _calcular_custo_pedido_vp(p_calc: dict) -> float:
+                    c_acum = 0.0
+                    for it_v in (p_calc.get("itens") or []):
                         if isinstance(it_v, dict):
                             if it_v.get("custo_manual_pedido") is not None:
                                 cst_it_v = float(it_v.get("custo_manual_pedido") or 0.0)
                             else:
                                 cst_it_v = float(mapa_custos_v.get(it_v.get("id"), 0.0) or it_v.get("preco_custo") or 0.0)
-                            custo_tot_v += cst_it_v * max(1, int(it_v.get("qtd") or 1))
+                            c_acum += cst_it_v * max(1, int(it_v.get("qtd") or 1))
+                    return c_acum
+
+                # Métricas do Período Selecionado
+                m1, m2, m3, m4 = st.columns(4)
+                peds_validos_v = [p for p in lista_ped_filtrada if str(p.get("status_pagamento") or "pendente").lower() != "cancelado"]
+                fat = sum(float(p.get("valor_total") or 0.0) for p in peds_validos_v)
+                custo_tot_v = sum(_calcular_custo_pedido_vp(p_v) for p_v in peds_validos_v)
                 lucro_tot_v = fat - custo_tot_v
                 margem_tot_v = (lucro_tot_v / fat * 100.0) if fat > 0 else 0.0
-                qtd_pendentes_v = len([p for p in lista_ped if p.get("status_pagamento") == "pendente"])
+                qtd_pendentes_v = len([p for p in lista_ped_filtrada if p.get("status_pagamento") == "pendente"])
 
                 with m1:
                     st.markdown(
                         f"<div style='background:#FFFFFF; border:1px solid #BFDBFE; border-left:5px solid #2563EB; border-radius:12px; padding:14px 16px;'>"
-                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>💰 Faturamento Bruto</div>"
+                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>💰 Faturamento ({html.escape(periodo_sel_vp.split('(')[0].strip())})</div>"
                         f"<div style='font-size:1.55rem; font-weight:900; color:#0F172A; margin:3px 0;'>R$ {fat:.2f}</div>"
-                        f"<div style='font-size:0.75rem; color:#2563EB; font-weight:600;'>{len(peds_validos_v)} pedido(s) ativo(s)</div>"
+                        f"<div style='font-size:0.75rem; color:#2563EB; font-weight:600;'>{len(peds_validos_v)} pedido(s) ativo(s) no período</div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -5902,9 +6880,9 @@ if modo_admin_ativo:
                 with m3:
                     st.markdown(
                         f"<div style='background:#FFFFFF; border:1px solid #DDD6FE; border-left:5px solid #7C3AED; border-radius:12px; padding:14px 16px;'>"
-                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>📦 Total de Pedidos</div>"
-                        f"<div style='font-size:1.55rem; font-weight:900; color:#0F172A; margin:3px 0;'>{len(lista_ped)}</div>"
-                        f"<div style='font-size:0.75rem; color:#6D28D9; font-weight:600;'>Histórico completo no Supabase</div>"
+                        f"<div style='font-size:0.76rem; font-weight:700; color:#475569; text-transform:uppercase;'>📦 Pedidos Exibidos</div>"
+                        f"<div style='font-size:1.55rem; font-weight:900; color:#0F172A; margin:3px 0;'>{len(lista_ped_filtrada)} <span style='font-size:0.9rem; color:#64748B; font-weight:600;'>/ {len(lista_ped)}</span></div>"
+                        f"<div style='font-size:0.75rem; color:#6D28D9; font-weight:600;'>Filtrados por data/status</div>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -5919,7 +6897,58 @@ if modo_admin_ativo:
                     )
                 st.write("")
 
-                for ped in lista_ped:
+                if not lista_ped_filtrada:
+                    st.warning("📭 Nenhum pedido encontrado para o período ou filtro selecionado. Mude o filtro de data acima para **📅 Todos os Pedidos** para ver todo o histórico.")
+
+                # Função para gerar o rótulo de grupo de data (Dia, Semana ou Mês/Ano)
+                def _obter_chave_grupo_data(p_grp: dict) -> str:
+                    dt_g = p_grp["_dt_local"]
+                    if agrupamento_sel_vp == "📅 Separar por Data (Dia a Dia)":
+                        dia_sem = nomes_dias_sem_pt.get(dt_g.weekday(), "")
+                        suf_hoje = " (HOJE)" if dt_g.date() == agora_dt.date() else (" (ONTEM)" if dt_g.date() == (agora_dt.date() - timedelta(days=1)) else "")
+                        return f"📅 {dt_g.strftime('%d/%m/%Y')} — {dia_sem}{suf_hoje}"
+                    elif agrupamento_sel_vp == "🗓️ Separar por Mês e Ano":
+                        nm_m = nomes_meses_pt.get(dt_g.month, "")
+                        return f"🗓️ {nm_m} de {dt_g.year}"
+                    elif agrupamento_sel_vp == "📆 Separar por Semana":
+                        ini_s = (dt_g - timedelta(days=dt_g.weekday())).date()
+                        fim_s = ini_s + timedelta(days=6)
+                        suf_sem = " (Semana Atual)" if ini_s == inicio_semana_atual else ""
+                        return f"📆 Semana de {ini_s.strftime('%d/%m/%Y')} a {fim_s.strftime('%d/%m/%Y')}{suf_sem}"
+                    return ""
+
+                # Pré-calcula totais por grupo de data para exibir na barra separadora
+                resumo_grupos_vp = {}
+                for p_g in lista_ped_filtrada:
+                    ch_g = _obter_chave_grupo_data(p_g)
+                    if ch_g:
+                        info_g = resumo_grupos_vp.setdefault(ch_g, {"qtd": 0, "fat": 0.0, "lucro": 0.0})
+                        info_g["qtd"] += 1
+                        if str(p_g.get("status_pagamento") or "pendente").lower() != "cancelado":
+                            v_t_g = float(p_g.get("valor_total") or 0.0)
+                            c_t_g = _calcular_custo_pedido_vp(p_g)
+                            info_g["fat"] += v_t_g
+                            info_g["lucro"] += (v_t_g - c_t_g)
+
+                grupo_atual_impresso = None
+                for ped in lista_ped_filtrada:
+                    chave_grp_ped = _obter_chave_grupo_data(ped)
+                    if chave_grp_ped and chave_grp_ped != grupo_atual_impresso:
+                        grupo_atual_impresso = chave_grp_ped
+                        rg_info = resumo_grupos_vp.get(chave_grp_ped, {"qtd": 1, "fat": 0.0, "lucro": 0.0})
+                        st.markdown(
+                            f"""
+                            <div style="background:linear-gradient(90deg, #EFF6FF 0%, #F8FAFC 100%); border:1px solid #BFDBFE; border-left:5px solid #2563EB; border-radius:10px; padding:9px 16px; margin:14px 0 8px 0; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                                <span style="font-weight:800; color:#1E3A8A; font-size:0.95rem;">{html.escape(chave_grp_ped)}</span>
+                                <span style="font-size:0.82rem; font-weight:700; color:#334155;">
+                                    📦 <b>{rg_info['qtd']} pedido(s)</b> &nbsp;•&nbsp;
+                                    💰 Faturamento: <b style="color:#1D4ED8;">R$ {rg_info['fat']:.2f}</b> &nbsp;•&nbsp;
+                                    📈 Lucro Real: <b style="color:#047857;">R$ {rg_info['lucro']:.2f}</b>
+                                </span>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([3.2, 2.8, 2.2])
                         
@@ -5985,6 +7014,10 @@ if modo_admin_ativo:
                         cor_metodo = "#1D4ED8" if "MERCADO" in str(metodo_pg_ped).upper() else ("#15803D" if "TON" in str(metodo_pg_ped).upper() else "#047857")
                         badge_metodo = f"&nbsp;<span style='background:{cor_metodo}15; color:{cor_metodo}; border:1px solid {cor_metodo}45; padding:3px 10px; border-radius:12px; font-weight:700; font-size:0.75rem;'>💳 {html.escape(str(metodo_pg_ped))}</span>"
 
+                        dt_ped_card = ped.get("_dt_local") or agora_dt
+                        txt_dt_ped_card = dt_ped_card.strftime("%d/%m/%Y às %H:%M")
+                        badge_data_ped = f"&nbsp;<span style='background:#F1F5F9; color:#334155; border:1px solid #CBD5E1; padding:3px 9px; border-radius:12px; font-weight:700; font-size:0.74rem;'>🗓️ {txt_dt_ped_card}</span>"
+
                         c1.markdown(
                             f"<h3 style='margin:0 0 6px 0; font-size:1.22rem; font-weight:800; color:#0F172A;'>Pedido #{ped['id']} — {html.escape(str(ped.get('cliente_nome') or 'Cliente'))}</h3>",
                             unsafe_allow_html=True,
@@ -5996,9 +7029,9 @@ if modo_admin_ativo:
                             else ""
                         )
                         c1.markdown(
-                            f"<div style='margin-bottom:10px;'>"
+                            f"<div style='margin-bottom:10px; display:flex; flex-wrap:wrap; gap:4px; align-items:center;'>"
                             f"<span style='background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}55; padding:3px 10px; border-radius:12px; font-weight:800; font-size:0.76rem;'>{html.escape(rotulo_badge_st)}</span>"
-                            f"{badge_metodo}{rastreio_badge}"
+                            f"{badge_metodo}{badge_data_ped}{rastreio_badge}"
                             f"</div>",
                             unsafe_allow_html=True,
                         )
@@ -6089,6 +7122,16 @@ if modo_admin_ativo:
                             key=f"adm_v_rast_{ped['id']}",
                         )
                         if c3.button("💾 Salvar Status & Avisar Cliente", key=f"btn_v_st_{ped['id']}", type="primary", use_container_width=True):
+                            nome_adm_v = (st.session_state.get("auth_user") or {}).get("nome") or "Admin"
+                            registrar_log_auditoria(
+                                origem="🛡️ Admin",
+                                autor=f"{nome_adm_v} (Admin)",
+                                acao=f"Atualização de Status — Pedido #{ped['id']}",
+                                alvo=f"Pedido #{ped['id']} ({ped.get('cliente_nome', 'Cliente')})",
+                                dados_antes={"status_pagamento": st_atual, "codigo_rastreio": rastreio_atual},
+                                dados_depois={"status_pagamento": novo_st, "codigo_rastreio": novo_rast},
+                                cliente_ref=str(ped.get("cliente_cpf") or ped.get("cliente_email") or ""),
+                            )
                             salvar_rastreio_no_pedido(ped, novo_rast, novo_status=novo_st)
                             em_ok, log_not, url_w_not = enviar_notificacao_status_cliente(ped, novo_st, novo_rast)
                             st.session_state[f"notificacao_ped_{ped['id']}"] = {
@@ -6203,6 +7246,25 @@ if modo_admin_ativo:
                                         "itens": itens_chg,
                                     }).eq("id", ped["id"]).execute()
 
+                                nome_adm_v = (st.session_state.get("auth_user") or {}).get("nome") or "Admin"
+                                registrar_log_auditoria(
+                                    origem="🛡️ Admin",
+                                    autor=f"{nome_adm_v} (Admin)",
+                                    acao=f"Mudança de Modalidade de Entrega / Frete — Pedido #{ped['id']}",
+                                    alvo=f"Pedido #{ped['id']} ({ped.get('cliente_nome', 'Cliente')})",
+                                    dados_antes={
+                                        "modalidade_frete": mod_frete_ped,
+                                        "valor_frete": f"R$ {val_frete_ped_f:.2f}",
+                                        "valor_total": f"R$ {val_tot_ped_f:.2f}",
+                                    },
+                                    dados_depois={
+                                        "modalidade_frete": nome_nova_mod,
+                                        "valor_frete": f"R$ {float(novo_val_frete_in):.2f}",
+                                        "valor_total": f"R$ {novo_total_calc_chg:.2f}",
+                                    },
+                                    cliente_ref=str(ped.get("cliente_cpf") or ped.get("cliente_email") or ""),
+                                )
+
                                 whats_c_num = re.sub(r"\D", "", str(ped.get("cliente_whatsapp") or ""))
                                 msg_chg_w = (
                                     f"Olá, *{ped.get('cliente_nome', 'Cliente')}*! Tudo bem? 😊\n"
@@ -6274,6 +7336,36 @@ if modo_admin_ativo:
                                     btn_salvar_ed = st.form_submit_button("💾 Salvar Alterações e Notificar Cliente", type="primary", use_container_width=True)
                                     if btn_salvar_ed:
                                         try:
+                                            nome_adm_v = (st.session_state.get("auth_user") or {}).get("nome") or "Admin"
+                                            registrar_log_auditoria(
+                                                origem="🛡️ Admin",
+                                                autor=f"{nome_adm_v} (Admin)",
+                                                acao=f"Edição Completa de Pedido — Pedido #{ped['id']}",
+                                                alvo=f"Pedido #{ped['id']} ({ed_nome})",
+                                                dados_antes={
+                                                    "nome": ped.get("cliente_nome", ""),
+                                                    "cpf_cnpj": ped.get("cliente_cpf", ""),
+                                                    "whatsapp": ped.get("cliente_whatsapp", ""),
+                                                    "email": ped.get("cliente_email", ""),
+                                                    "cep": ped.get("cep", ""),
+                                                    "endereco_completo": ped.get("endereco_completo", ""),
+                                                    "status_pagamento": st_atual,
+                                                    "valor_frete": f"R$ {float(ped.get('valor_frete') or 0.0):.2f}",
+                                                    "valor_total": f"R$ {float(ped.get('valor_total') or 0.0):.2f}",
+                                                },
+                                                dados_depois={
+                                                    "nome": ed_nome,
+                                                    "cpf_cnpj": ed_cpf,
+                                                    "whatsapp": ed_whats,
+                                                    "email": ed_email,
+                                                    "cep": ed_cep,
+                                                    "endereco_completo": ed_end,
+                                                    "status_pagamento": ed_status,
+                                                    "valor_frete": f"R$ {float(ed_frete):.2f}",
+                                                    "valor_total": f"R$ {float(ed_total):.2f}",
+                                                },
+                                                cliente_ref=str(ed_cpf or ed_email or ""),
+                                            )
                                             salvar_rastreio_no_pedido(ped, ed_rastreio, novo_status=ed_status)
                                             itens_up_ed = [dict(it_x) for it_x in (ped.get("itens") or []) if isinstance(it_x, dict)]
                                             if itens_up_ed:
@@ -6707,22 +7799,25 @@ if modo_admin_ativo:
         # 10. ABA PAGAMENTOS (PIX + TON + MERCADO PAGO), FRETE & NOTIFICAÇÕES
         # =================================================================
         elif aba_admin == "💳 Pagamento Pix":
-            st.markdown('<h1 class="admin-page-title">💙 Checkout Oficial Mercado Pago & Notificações</h1>', unsafe_allow_html=True)
-            st.caption("Integração 100% automatizada com o Mercado Pago (Pix com aprovação na hora, Cartão em até 12x, Saldo MP e Boleto) + Alertas de WhatsApp e E-mail:")
+            st.markdown('<h1 class="admin-page-title">💙 Checkout Oficial Mercado Pago & Meios de Pagamento</h1>', unsafe_allow_html=True)
+            st.caption("Gerencie o Checkout Oficial do Mercado Pago, cadastre ou ative novas formas de pagamento quando desejar e configure alertas automáticos:")
 
-            tab_pg_meios, tab_pg_notifs = st.tabs([
+            tab_pg_meios, tab_pg_extras, tab_pg_notifs = st.tabs([
                 "💙 1. Credenciais & Checkout Mercado Pago",
-                "🔔 2. Alertas Automáticos (WhatsApp & E-mail do Cliente)",
+                "➕ 2. Cadastrar / Ativar Outras Formas de Pagamento",
+                "🔔 3. Alertas Automáticos (WhatsApp & E-mail)",
             ])
 
             cfg_pg_adm = obter_pagamento_config()
             cfg_nt_adm = obter_notificacoes_config()
+            metodos_custom_adm = list(cfg_pg_adm.get("metodos_personalizados") or [])
 
             with tab_pg_meios:
                 with st.form("form_config_pagamentos_completo"):
                     with st.container(border=True):
                         st.markdown('<div class="nuvem-card-title">💙 Checkout Pro Oficial Mercado Pago (Pix, Cartão até 12x, Débito e Boleto)</div>', unsafe_allow_html=True)
-                        st.caption("Ao colar seu Access Token de Produção (`APP_USR-...`), a loja gera o Checkout Pro com o valor exato do pedido, o dinheiro cai direto na sua conta Mercado Pago e o pedido muda para PAGO automaticamente!")
+                        st.caption("Ao colar seu Access Token de Produção (`APP_USR-...`), a loja gera o Checkout Pro e o QR Code Pix com o valor exato do pedido, o dinheiro cai direto na sua conta Mercado Pago e o pedido muda para PAGO automaticamente!")
+                        mp_at_in = st.checkbox("Ativar Mercado Pago Oficial na Loja", value=bool(cfg_pg_adm.get("mp_ativo", True)))
                         mp_tok = st.text_input(
                             "🔑 Access Token de Produção do Mercado Pago (`APP_USR-...`) *",
                             value=cfg_pg_adm.get("mp_access_token", MP_TOKEN),
@@ -6752,22 +7847,16 @@ if modo_admin_ativo:
                         )
 
                     if st.form_submit_button("💾 Salvar Configurações do Mercado Pago", type="primary", use_container_width=True):
-                        st.session_state["config_loja"]["pagamento_config"] = {
-                            "pix_ativo": False,
-                            "chave_pix": cfg_pg_adm.get("chave_pix", CHAVE_PIX),
-                            "nome_beneficiario": cfg_pg_adm.get("nome_beneficiario", NOME_BENEFICIARIO),
-                            "cidade_beneficiario": cfg_pg_adm.get("cidade_beneficiario", CIDADE_BENEFICIARIO),
-                            "ton_ativo": False,
-                            "ton_link_padrao": "",
-                            "ton_max_parcelas": int(ton_max_p),
-                            "ton_parcelas_sem_juros": 3,
-                            "ton_instrucoes": "",
-                            "mp_ativo": True,
+                        cfg_pg_novo = dict(cfg_pg_adm)
+                        cfg_pg_novo.update({
+                            "mp_ativo": bool(mp_at_in),
                             "mp_access_token": mp_tok.strip(),
                             "mp_url_retorno": mp_url_ret.strip() or "https://lojatagsinfor.streamlit.app",
                             "mp_link_padrao": mp_lnk.strip(),
                             "mp_instrucoes": mp_inst.strip(),
-                        }
+                            "ton_max_parcelas": int(ton_max_p),
+                        })
+                        st.session_state["config_loja"]["pagamento_config"] = cfg_pg_novo
                         salvar_config_loja_supabase()
                         st.success("✅ Checkout Oficial do Mercado Pago salvo com sucesso no Supabase!")
                         st.rerun()
@@ -6801,24 +7890,137 @@ if modo_admin_ativo:
                             "2. Clique em **Criar aplicação** (ou abra sua aplicação existente), dê o nome **Tags Informática** e selecione **Pagamentos online → Checkout Pro**.\n"
                             "3. No menu lateral esquerdo da sua aplicação, clique em **Credenciais de produção**.\n"
                             "4. Copie o código do campo **Access Token** (ele começa com `APP_USR-...`).\n"
-                            "5. Cole esse código no campo **🔑 Access Token de Produção do Mercado Pago** aqui acima, clique em **💾 Salvar Configurações de Pagamento** e depois em **🧪 Testar Conexão**!\n\n"
-                            "✨ **Pronto!** A partir desse momento, sempre que um cliente finalizar uma compra na sua loja, o botão **💙 Pagar Agora no Mercado Pago** abrirá um Checkout oficial com o valor exato do pedido (produtos + frete - cupom), aceitando **Pix, Cartão em até 12x, Saldo MP e Boleto**, caindo na hora na sua conta!"
+                            "5. Cole esse código no campo **🔑 Access Token de Produção do Mercado Pago** aqui acima, clique em **💾 Salvar Configurações do Mercado Pago** e depois em **🧪 Testar Conexão**!"
                         )
+
+            with tab_pg_extras:
+                st.markdown("#### ➕ Cadastrar ou Ativar Outras Formas de Pagamento")
+                st.caption("Se apenas o **Mercado Pago** estiver ativo, o checkout da loja vai direto para o Mercado Pago. Assim que você ativar ou cadastrar qualquer outra opção abaixo, ela passa a aparecer automaticamente para o cliente escolher no carrinho!")
+
+                with st.form("form_opcoes_pagamento_nativas_extras"):
+                    with st.container(border=True):
+                        st.markdown('<div class="nuvem-card-title">💵 1. Pagamento na Retirada / Na Entrega (Presencial)</div>', unsafe_allow_html=True)
+                        st.caption("Ideal para clientes de Manaus que preferem pagar na maquininha ou em dinheiro no momento da retirada no CD ou ao receber o Motoboy:")
+                        c_pr1, c_pr2 = st.columns([1.1, 2.9])
+                        pres_at_in = c_pr1.checkbox("Ativar Pagamento na Retirada/Entrega", value=bool(cfg_pg_adm.get("presencial_ativo", False)))
+                        pres_inst_in = c_pr2.text_input(
+                            "Instruções para Pagamento na Retirada/Entrega:",
+                            value=cfg_pg_adm.get("presencial_instrucoes", "Pague presencialmente via Pix, Cartão na Maquininha ou Dinheiro no ato da retirada ou entrega."),
+                        )
+
+                    with st.container(border=True):
+                        st.markdown('<div class="nuvem-card-title">⚡ 2. Pix Direto na Chave da Loja (Taxa Zero — QR Code Banco Central)</div>', unsafe_allow_html=True)
+                        cp_x1, cp_x2, cp_x3, cp_x4, cp_x5 = st.columns([0.95, 1.5, 1.4, 1.0, 0.9])
+                        px_at_in = cp_x1.checkbox("Ativar Pix Direto", value=bool(cfg_pg_adm.get("pix_ativo", False)))
+                        px_ch_in = cp_x2.text_input("Chave Pix Recebedora", value=cfg_pg_adm.get("chave_pix", CHAVE_PIX))
+                        px_nm_in = cp_x3.text_input("Nome Beneficiário", value=cfg_pg_adm.get("nome_beneficiario", NOME_BENEFICIARIO))
+                        px_cd_in = cp_x4.text_input("Cidade (sem acento)", value=cfg_pg_adm.get("cidade_beneficiario", CIDADE_BENEFICIARIO))
+                        px_desc_in = cp_x5.number_input("Desconto Pix (%)", min_value=0.0, max_value=50.0, value=float(cfg_pg_adm.get("desconto_pix_percentual") or 0.0), step=1.0)
+
+                    with st.container(border=True):
+                        st.markdown('<div class="nuvem-card-title">💚 3. Link de Pagamento Ton / Stone (ou Outra Maquininha)</div>', unsafe_allow_html=True)
+                        ct_e1, ct_e2 = st.columns([1.1, 2.9])
+                        ton_at_in = ct_e1.checkbox("Ativar Link Ton / Stone", value=bool(cfg_pg_adm.get("ton_ativo", False)))
+                        ton_lnk_in = ct_e2.text_input("Link Geral da Ton / Operadora", value=cfg_pg_adm.get("ton_link_padrao", ""), placeholder="https://pay.ton.com.br/...")
+                        ton_inst_in = st.text_input(
+                            "Instruções exibidas ao escolher Ton:",
+                            value=cfg_pg_adm.get("ton_instrucoes", "Clique no botão para abrir o link seguro da Ton e parcelar no cartão."),
+                        )
+
+                    if st.form_submit_button("💾 Salvar Opções Extras de Pagamento", type="primary", use_container_width=True):
+                        cfg_pg_up2 = dict(cfg_pg_adm)
+                        cfg_pg_up2.update({
+                            "presencial_ativo": bool(pres_at_in),
+                            "presencial_instrucoes": pres_inst_in.strip(),
+                            "pix_ativo": bool(px_at_in),
+                            "chave_pix": px_ch_in.strip() or CHAVE_PIX,
+                            "nome_beneficiario": px_nm_in.strip() or NOME_BENEFICIARIO,
+                            "cidade_beneficiario": px_cd_in.strip() or CIDADE_BENEFICIARIO,
+                            "desconto_pix_percentual": float(px_desc_in),
+                            "ton_ativo": bool(ton_at_in),
+                            "ton_link_padrao": ton_lnk_in.strip(),
+                            "ton_instrucoes": ton_inst_in.strip(),
+                        })
+                        st.session_state["config_loja"]["pagamento_config"] = cfg_pg_up2
+                        salvar_config_loja_supabase()
+                        st.success("✅ Opções de pagamento atualizadas no Supabase!")
+                        st.rerun()
+
+                with st.container(border=True):
+                    st.markdown('<div class="nuvem-card-title">➕ 4. Cadastrar Nova Forma de Pagamento Personalizada (InfinitePay, PagBank, PicPay, Boleto CNPJ, etc.)</div>', unsafe_allow_html=True)
+                    with st.form("form_add_metodo_pagamento_custom", clear_on_submit=True):
+                        cm_c1, cm_c2, cm_c3 = st.columns([2.0, 1.5, 0.9])
+                        nm_custom_in = cm_c1.text_input("Nome da Forma de Pagamento *", placeholder="Ex: 💜 InfinitePay (Cartão até 12x) ou 💛 PagBank")
+                        tp_custom_in = cm_c2.selectbox(
+                            "Tipo de Funcionamento",
+                            [
+                                "🔗 Link de Pagamento Externo",
+                                "📲 Combinar / Pagar via WhatsApp ou Entrega",
+                                "⚡ Chave Pix / Transferência Direta",
+                            ],
+                        )
+                        desc_custom_in = cm_c3.number_input("Desconto Extra (%)", min_value=0.0, max_value=50.0, value=0.0, step=1.0)
+                        cm_c4, cm_c5 = st.columns([1.8, 2.2])
+                        lnk_custom_in = cm_c4.text_input("Link de Pagamento ou Chave Pix (opcional)", placeholder="https://link.infinitepay.io/... ou chave")
+                        inst_custom_in = cm_c5.text_input("Instruções exibidas ao cliente no Checkout", placeholder="Ex: Clique no link abaixo para pagar ou envie o comprovante no WhatsApp.")
+
+                        if st.form_submit_button("➕ Adicionar Nova Forma de Pagamento à Loja", type="primary", use_container_width=True):
+                            if not nm_custom_in.strip():
+                                st.error("Informe o nome da forma de pagamento.")
+                            else:
+                                novo_id_mp = f"custom_{int(datetime.now().timestamp())}"
+                                metodos_custom_adm.append({
+                                    "id": novo_id_mp,
+                                    "nome": nm_custom_in.strip(),
+                                    "tipo": tp_custom_in,
+                                    "desconto_pct": float(desc_custom_in),
+                                    "link": lnk_custom_in.strip(),
+                                    "instrucoes": inst_custom_in.strip() or f"Conclua seu pagamento via {nm_custom_in.strip()}.",
+                                    "ativo": True,
+                                })
+                                cfg_pg_up3 = dict(cfg_pg_adm)
+                                cfg_pg_up3["metodos_personalizados"] = metodos_custom_adm
+                                st.session_state["config_loja"]["pagamento_config"] = cfg_pg_up3
+                                salvar_config_loja_supabase()
+                                st.success(f"🎉 Forma de pagamento **{nm_custom_in.strip()}** adicionada e ativada no checkout!")
+                                st.rerun()
+
+                    if metodos_custom_adm:
+                        st.markdown("##### 📋 Formas de Pagamento Personalizadas Cadastradas:")
+                        for idx_mc, mc_it in enumerate(list(metodos_custom_adm)):
+                            c_mc1, c_mc2, c_mc3, c_mc4 = st.columns([2.4, 1.8, 0.8, 0.8], vertical_alignment="center")
+                            txt_d_mc = f" (-{float(mc_it.get('desconto_pct') or 0):.0f}% OFF)" if float(mc_it.get("desconto_pct") or 0) > 0 else ""
+                            c_mc1.markdown(f"**{mc_it.get('nome')}**{txt_d_mc}<br><span style='font-size:0.76rem; color:#64748B;'>{mc_it.get('tipo')}</span>", unsafe_allow_html=True)
+                            c_mc2.caption(mc_it.get("link") or mc_it.get("instrucoes") or "-")
+                            at_mc_novo = c_mc3.checkbox("Ativo", value=bool(mc_it.get("ativo", True)), key=f"chk_mc_at_{mc_it.get('id', idx_mc)}")
+                            if at_mc_novo != bool(mc_it.get("ativo", True)):
+                                metodos_custom_adm[idx_mc]["ativo"] = at_mc_novo
+                                st.session_state["config_loja"]["pagamento_config"]["metodos_personalizados"] = metodos_custom_adm
+                                salvar_config_loja_supabase()
+                                st.rerun()
+                            if c_mc4.button("🗑️ Excluir", key=f"btn_del_mc_{mc_it.get('id', idx_mc)}", use_container_width=True):
+                                metodos_custom_adm.pop(idx_mc)
+                                st.session_state["config_loja"]["pagamento_config"]["metodos_personalizados"] = metodos_custom_adm
+                                salvar_config_loja_supabase()
+                                st.rerun()
 
             with tab_pg_notifs:
                 with st.form("form_config_notificacoes"):
                     with st.container(border=True):
-                        st.markdown('<div class="nuvem-card-title">📲 1. WhatsApp da Loja (Receber Alerta de Separação de Pedido)</div>', unsafe_allow_html=True)
+                        st.markdown('<div class="nuvem-card-title">📲 1. Seu Número Único de WhatsApp da Loja (100% Gratuito — Sem API!)</div>', unsafe_allow_html=True)
+                        st.info("💡 **Você não precisa contratar nenhuma API paga de WhatsApp!** Como você é o único responsável pela loja, basta informar seu número de WhatsApp com DDD abaixo. Todos os botões do site (`💬 CENTRAL WHATSAPP` no topo, `💬 Botão Flutuante`, `Checkout`, `Pedidos` e `Suporte`) usarão automaticamente este seu número via link direto oficial do WhatsApp (`wa.me`)!")
+                        w_atual_alerta, _ = obter_whatsapp_oficial_loja()
                         w_alerta_in = st.text_input(
-                            "Número de WhatsApp da Loja que receberá o alerta 'Separar Produto' (com DDD):",
-                            value=cfg_nt_adm.get("whatsapp_loja_alertas", WHATSAPP_LOJA),
-                            placeholder="92981234567",
+                            "📱 Seu Número Único de WhatsApp da Loja (com DDD) *:",
+                            value=w_atual_alerta,
+                            placeholder="Ex: 92981018296",
                         )
-                        w_api_in = st.text_input(
-                            "URL de Webhook / API WhatsApp para disparo em segundo plano (opcional — ex: Z-API, Evolution):",
-                            value=cfg_nt_adm.get("whatsapp_api_url", ""),
-                            placeholder="https://sua-api-whatsapp.com/send-text (deixe em branco para usar o botão direto grátis)",
-                        )
+                        with st.expander("⚙️ Opcional Avançado: URL de Webhook / API Externa (Deixe em branco se não usar API)"):
+                            w_api_in = st.text_input(
+                                "URL de Webhook / API WhatsApp (opcional — deixe em branco para usar o WhatsApp direto grátis):",
+                                value=cfg_nt_adm.get("whatsapp_api_url", ""),
+                                placeholder="Deixe em branco — você não precisa de API!",
+                            )
 
                     with st.container(border=True):
                         st.markdown('<div class="nuvem-card-title">📧 2. E-mail Automático para o Cliente ao Mudar Status no Admin (SMTP)</div>', unsafe_allow_html=True)
@@ -6832,7 +8034,7 @@ if modo_admin_ativo:
                         smtp_em_in = cs_m4.text_input("E-mail Remetente da Loja (ex: seuemail@gmail.com)", value=cfg_nt_adm.get("smtp_email", ""))
                         smtp_pw_in = cs_m5.text_input("Senha de App do E-mail (16 dígitos Google)", value=cfg_nt_adm.get("smtp_senha_app", ""), type="password")
 
-                    if st.form_submit_button("💾 Salvar Configurações de Alertas (WhatsApp & E-mail)", type="primary", use_container_width=True):
+                    if st.form_submit_button("💾 Salvar Meu Número de WhatsApp & Alertas", type="primary", use_container_width=True):
                         st.session_state["config_loja"]["notificacoes_config"] = {
                             "whatsapp_loja_alertas": w_alerta_in.strip() or WHATSAPP_LOJA,
                             "whatsapp_api_url": w_api_in.strip(),
@@ -6842,8 +8044,9 @@ if modo_admin_ativo:
                             "smtp_email": smtp_em_in.strip(),
                             "smtp_senha_app": smtp_pw_in.strip(),
                         }
+                        atualizar_whatsapp_unico_loja(w_alerta_in)
                         salvar_config_loja_supabase()
-                        st.success("✅ Configurações de notificações salvas no Supabase!")
+                        st.success("✅ Seu número único de WhatsApp foi salvo e aplicado em todos os botões da loja!")
                         st.rerun()
 
     st.stop()
@@ -6853,7 +8056,7 @@ if modo_admin_ativo:
 # ROTA 2: A LOJA OFICIAL (CLIENTES) - LOGIN, CARRINHO, RASTREIO E SUPORTE
 # =====================================================================
 cfg_loja = st.session_state.get("config_loja", {})
-whats_num_clean = re.sub(r"\D", "", WHATSAPP_LOJA)
+whats_loja_exibicao, whats_num_clean = obter_whatsapp_oficial_loja()
 
 # Detector Automático e Seguro de Retorno do Checkout Pro do Mercado Pago (Valida sempre na API Oficial!)
 mp_ret_param = st.query_params.get("mp_retorno") or st.query_params.get("collection_status") or st.query_params.get("status")
@@ -7142,12 +8345,17 @@ texto_promo_topo = cfg_loja.get("top_promo") or "⚡ TAGS INFORMÁTICA | CURSOS,
 local_topo = cfg_loja.get("localizacao_cabecalho") or "📍 Manaus/AM • Envio p/ Todo Brasil"
 slogan_topo = cfg_loja.get("slogan_cabecalho") or "Cursos, Mentorias & Tecnologia Oficial"
 
+link_whats_topo_html = (
+    f'<a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1,%20gostaria%20de%20informa%C3%A7%C3%B5es%20sobre%20os%20cursos%20e%20produtos!" target="_blank">💬 CENTRAL WHATSAPP</a>'
+    if cfg_loja.get("exibir_whats_topo", True)
+    else ""
+)
 st.markdown(
     f'<div class="top-promo-bar">'
     f'<div class="top-promo-text">{texto_promo_topo}</div>'
     f'<div class="top-links">'
     f'<span>{local_topo}</span>'
-    f'<a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1,%20gostaria%20de%20informa%C3%A7%C3%B5es%20sobre%20os%20cursos%20e%20produtos!" target="_blank">💬 CENTRAL WHATSAPP</a>'
+    f'{link_whats_topo_html}'
     f'<span>🔒 COMPRA 100% SEGURA</span>'
     f'</div>'
     f'</div>',
@@ -7570,6 +8778,7 @@ if aba_loja == "conta":
         with col_pf2:
             with st.container(border=True):
                 st.markdown("#### ✏️ Atualizar Meus Dados & Endereço de Cadastro")
+                st.caption("Você pode atualizar seu Nome, CPF/CNPJ, E-mail, WhatsApp, Endereço ou Senha a qualquer momento:")
                 col_cep_pf1, col_cep_pf2 = st.columns([2.5, 1.3])
                 with col_cep_pf1:
                     cep_pf_busca = st.text_input(
@@ -7598,57 +8807,135 @@ if aba_loja == "conta":
                                 st.warning("Preencha os campos do endereço abaixo manualmente.")
 
                 with st.form("form_atualizar_perfil_cli"):
-                    up_nome = st.text_input("Nome Completo", value=cliente_atual.get("nome") or "")
-                    c_up1, c_up2 = st.columns(2)
-                    up_whats = c_up1.text_input("WhatsApp com DDD", value=cliente_atual.get("whatsapp") or "")
-                    up_cep = c_up2.text_input("CEP", value=st.session_state.get("pf_cli_cep") or cliente_atual.get("cep") or "")
+                    c_up_id1, c_up_id2 = st.columns(2)
+                    up_nome = c_up_id1.text_input("Nome Completo *", value=cliente_atual.get("nome") or "")
+                    up_cpf = c_up_id2.text_input("CPF ou CNPJ *", value=cliente_atual.get("cpf_cnpj") or "")
+
+                    c_up1, c_up2, c_up_em = st.columns([1.2, 1.5, 1])
+                    up_whats = c_up1.text_input("WhatsApp com DDD *", value=cliente_atual.get("whatsapp") or "")
+                    up_email = c_up2.text_input("E-mail *", value=cliente_atual.get("email") or "")
+                    up_cep = c_up_em.text_input("CEP *", value=st.session_state.get("pf_cli_cep") or cliente_atual.get("cep") or "")
+
                     c_up3, c_up4 = st.columns([3, 1])
+                    rua_salva_pf = (cliente_atual.get("rua") or "").strip()
+                    if not rua_salva_pf and cliente_atual.get("endereco_completo"):
+                        end_raw_pf = str(cliente_atual.get("endereco_completo") or "").strip()
+                        if end_raw_pf.lower() != "não informado":
+                            rua_salva_pf = end_raw_pf.split(",")[0].strip()
                     up_rua = c_up3.text_input(
                         "Rua / Logradouro",
-                        value=st.session_state.get("pf_cli_rua") or cliente_atual.get("rua") or cliente_atual.get("endereco_completo") or "",
+                        value=st.session_state.get("pf_cli_rua") or rua_salva_pf,
                     )
                     up_num = c_up4.text_input("Número", value=cliente_atual.get("numero") or "S/N")
                     c_up5, c_up6, c_up7 = st.columns([1.5, 1.5, 0.8])
                     up_bairro = c_up5.text_input("Bairro", value=st.session_state.get("pf_cli_bairro") or cliente_atual.get("bairro") or "Centro")
                     up_cid = c_up6.text_input("Cidade", value=st.session_state.get("pf_cli_cidade") or cliente_atual.get("cidade") or "Manaus")
                     up_uf = c_up7.text_input("UF", value=st.session_state.get("pf_cli_uf") or cliente_atual.get("estado") or "AM", max_chars=2)
-                    if st.form_submit_button("💾 Salvar Meu Endereço Padrão", type="primary", use_container_width=True):
-                        up_end = f"{up_rua.strip()}, {up_num.strip() or 'S/N'}, {up_bairro.strip() or 'Centro'}, {up_cid.strip() or 'Manaus'}/{(up_uf.strip() or 'AM').upper()} - CEP {up_cep.strip()}"
-                        cliente_atual["nome"] = up_nome.strip()
-                        cliente_atual["whatsapp"] = up_whats.strip()
-                        cliente_atual["cep"] = up_cep.strip()
-                        cliente_atual["rua"] = up_rua.strip()
-                        cliente_atual["numero"] = up_num.strip() or "S/N"
-                        cliente_atual["bairro"] = up_bairro.strip() or "Centro"
-                        cliente_atual["cidade"] = up_cid.strip() or "Manaus"
-                        cliente_atual["estado"] = (up_uf.strip() or "AM").upper()
-                        cliente_atual["endereco_completo"] = up_end
-                        for _k_pf in ("pf_cli_cep", "pf_cli_rua", "pf_cli_bairro", "pf_cli_cidade", "pf_cli_uf"):
-                            st.session_state.pop(_k_pf, None)
-                        if cliente_atual.get("id"):
-                            try:
-                                supabase.table("clientes").update({
-                                    "nome": cliente_atual["nome"],
-                                    "whatsapp": cliente_atual["whatsapp"],
-                                    "cep": cliente_atual["cep"],
-                                    "endereco_completo": up_end,
-                                    "bairro": cliente_atual["bairro"],
-                                    "cidade": cliente_atual["cidade"],
-                                    "estado": cliente_atual["estado"],
-                                }).eq("id", cliente_atual["id"]).execute()
-                            except Exception:
+
+                    up_nova_senha = st.text_input(
+                        "🔑 Alterar Minha Senha (opcional — deixe em branco para manter a atual):",
+                        type="password",
+                        placeholder="Digite apenas se quiser trocar sua senha",
+                    )
+
+                    if st.form_submit_button("💾 Salvar Meus Dados & Endereço no Cadastro", type="primary", use_container_width=True):
+                        if not up_nome.strip() or not up_cpf.strip():
+                            st.error("Nome Completo e CPF/CNPJ são obrigatórios.")
+                        elif up_nova_senha.strip() and len(up_nova_senha.strip()) < 4:
+                            st.error("A nova senha deve ter pelo menos 4 caracteres.")
+                        else:
+                            up_end = f"{up_rua.strip()}, {up_num.strip() or 'S/N'}, {up_bairro.strip() or 'Centro'}, {up_cid.strip() or 'Manaus'}/{(up_uf.strip() or 'AM').upper()} - CEP {up_cep.strip()}"
+                            dados_antes_pf = {
+                                "nome": str(cliente_atual.get("nome") or ""),
+                                "cpf_cnpj": str(cliente_atual.get("cpf_cnpj") or ""),
+                                "email": str(cliente_atual.get("email") or ""),
+                                "whatsapp": str(cliente_atual.get("whatsapp") or ""),
+                                "cep": str(cliente_atual.get("cep") or ""),
+                                "endereco_completo": str(cliente_atual.get("endereco_completo") or ""),
+                                "bairro": str(cliente_atual.get("bairro") or ""),
+                                "cidade": str(cliente_atual.get("cidade") or ""),
+                                "estado": str(cliente_atual.get("estado") or ""),
+                            }
+                            dados_depois_pf = {
+                                "nome": up_nome.strip(),
+                                "cpf_cnpj": up_cpf.strip(),
+                                "email": up_email.strip().lower(),
+                                "whatsapp": up_whats.strip(),
+                                "cep": up_cep.strip(),
+                                "endereco_completo": up_end,
+                                "bairro": up_bairro.strip() or "Centro",
+                                "cidade": up_cid.strip() or "Manaus",
+                                "estado": (up_uf.strip() or "AM").upper(),
+                            }
+                            alt_extra_pf = []
+                            if up_nova_senha.strip():
+                                cliente_atual["senha"] = gerar_hash_senha(up_nova_senha.strip())
+                                alt_extra_pf.append({"campo": "Senha de Acesso", "antes": "••••••••", "depois": "Alterada pelo próprio cliente"})
+
+                            cliente_atual["nome"] = dados_depois_pf["nome"]
+                            cliente_atual["cpf_cnpj"] = dados_depois_pf["cpf_cnpj"]
+                            cliente_atual["email"] = dados_depois_pf["email"]
+                            cliente_atual["whatsapp"] = dados_depois_pf["whatsapp"]
+                            cliente_atual["cep"] = dados_depois_pf["cep"]
+                            cliente_atual["rua"] = up_rua.strip()
+                            cliente_atual["numero"] = up_num.strip() or "S/N"
+                            cliente_atual["bairro"] = dados_depois_pf["bairro"]
+                            cliente_atual["cidade"] = dados_depois_pf["cidade"]
+                            cliente_atual["estado"] = dados_depois_pf["estado"]
+                            cliente_atual["endereco_completo"] = up_end
+                            for _k_pf in ("pf_cli_cep", "pf_cli_rua", "pf_cli_bairro", "pf_cli_cidade", "pf_cli_uf"):
+                                st.session_state.pop(_k_pf, None)
+
+                            payload_cli_pf = {
+                                "nome": cliente_atual["nome"],
+                                "cpf_cnpj": cliente_atual["cpf_cnpj"],
+                                "email": cliente_atual["email"],
+                                "whatsapp": cliente_atual["whatsapp"],
+                                "cep": cliente_atual["cep"],
+                                "endereco_completo": up_end,
+                                "bairro": cliente_atual["bairro"],
+                                "cidade": cliente_atual["cidade"],
+                                "estado": cliente_atual["estado"],
+                            }
+                            if up_nova_senha.strip():
+                                payload_cli_pf["senha"] = cliente_atual["senha"]
+
+                            if cliente_atual.get("id"):
                                 try:
-                                    supabase.table("clientes").update({
-                                        "nome": cliente_atual["nome"],
-                                        "whatsapp": cliente_atual["whatsapp"],
-                                        "cep": cliente_atual["cep"],
-                                        "endereco_completo": up_end,
-                                    }).eq("id", cliente_atual["id"]).execute()
+                                    supabase.table("clientes").update(payload_cli_pf).eq("id", cliente_atual["id"]).execute()
+                                except Exception:
+                                    try:
+                                        supabase.table("clientes").update({
+                                            "nome": cliente_atual["nome"],
+                                            "cpf_cnpj": cliente_atual["cpf_cnpj"],
+                                            "email": cliente_atual["email"],
+                                            "whatsapp": cliente_atual["whatsapp"],
+                                            "cep": cliente_atual["cep"],
+                                            "endereco_completo": up_end,
+                                        }).eq("id", cliente_atual["id"]).execute()
+                                    except Exception:
+                                        pass
+                            elif dados_antes_pf["cpf_cnpj"]:
+                                try:
+                                    supabase.table("clientes").update(payload_cli_pf).eq("cpf_cnpj", dados_antes_pf["cpf_cnpj"]).execute()
                                 except Exception:
                                     pass
-                        sincronizar_carrinho_cliente()
-                        st.success("✅ Dados e endereço padrão atualizados com sucesso!")
-                        st.rerun()
+
+                            registrar_log_auditoria(
+                                origem="👤 Cliente",
+                                autor=f"{cliente_atual['nome']} (Cliente)",
+                                acao="Atualização de Dados pelo Próprio Cliente (Minha Conta)",
+                                alvo=f"Cliente: {cliente_atual['nome']} (CPF: {cliente_atual['cpf_cnpj']})",
+                                dados_antes=dados_antes_pf,
+                                dados_depois=dados_depois_pf,
+                                alteracoes_manuais=alt_extra_pf,
+                                cliente_ref=cliente_atual["cpf_cnpj"] or cliente_atual["email"],
+                                tabela_afetada="clientes",
+                                registro_id=cliente_atual.get("id"),
+                            )
+                            sincronizar_carrinho_cliente()
+                            st.success("✅ Dados e endereço atualizados com sucesso!")
+                            st.rerun()
 
 
 # =====================================================================
@@ -7693,10 +8980,9 @@ elif aba_loja == "carrinho":
 
                     for idx_c, item_c in enumerate(list(carrinho_atual)):
                         st.divider()
-                        img_it_c = item_c.get("imagem_url") or "https://via.placeholder.com/120"
-                        pv_it_c = float(item_c.get("preco_venda", 0))
-                        qtd_it_c = int(item_c.get("qtd", 1))
-                        sub_it = pv_it_c * qtd_it_c
+                        img_it_c = item_c.get("imagem_url") or "https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?w=400"
+                        pv_it_c = float(item_c.get("preco_venda") or 0.0)
+                        qtd_it_c = int(item_c.get("qtd") or 1)
                         st.markdown(
                             f'<div style="display:flex; align-items:center; gap:12px; background:#F8FAFC; border:1px solid #CBD5E1; border-radius:12px; padding:10px 12px; margin-bottom:8px;">'
                             f'<img src="{img_it_c}" style="width:62px; height:62px; border-radius:8px; object-fit:cover; flex-shrink:0; background:#FFFFFF; border:1px solid #E2E8F0;">'
@@ -7751,16 +9037,22 @@ elif aba_loja == "carrinho":
                     cupom_frete_gratis_ativo = False
 
                     if cupom_digitado:
-                        cupom_encontrado = next((c for c in st.session_state["cupons"] if c["codigo"] == cupom_digitado and c.get("ativo", True)), None)
+                        todos_cupons_chk = carregar_todos_cupons_loja()
+                        cupom_qualquer = next((c for c in todos_cupons_chk if str(c.get("codigo") or "").strip().upper() == cupom_digitado), None)
+                        if cupom_qualquer and not cupom_qualquer.get("ativo", True):
+                            st.warning(f"⚠️ O cupom **{cupom_digitado}** está temporariamente desativado/pausado no momento.")
+                            cupom_encontrado = None
+                        else:
+                            cupom_encontrado = cupom_qualquer
                         if cupom_encontrado:
                             lim_u = int(cupom_encontrado.get("limite_usos") or 0)
                             atu_u = int(cupom_encontrado.get("usos_atuais") or 0)
                             if lim_u > 0 and atu_u >= lim_u:
                                 st.error("Este cupom já atingiu o limite máximo de utilizações.")
                                 cupom_encontrado = None
-                            elif subtotal_calc >= cupom_encontrado.get("min_carrinho", 0):
+                            elif subtotal_calc >= float(cupom_encontrado.get("min_carrinho") or 0):
                                 if cupom_encontrado["tipo"] == "Porcentagem":
-                                    desconto_valor = subtotal_calc * (cupom_encontrado["valor"] / 100.0)
+                                    desconto_valor = subtotal_calc * (float(cupom_encontrado["valor"]) / 100.0)
                                     st.success(f"✅ Cupom **{cupom_digitado}** aplicado! (-R$ {desconto_valor:.2f})")
                                 elif cupom_encontrado["tipo"] == "Valor fixo":
                                     desconto_valor = min(subtotal_calc, float(cupom_encontrado["valor"]))
@@ -7769,9 +9061,9 @@ elif aba_loja == "carrinho":
                                     cupom_frete_gratis_ativo = True
                                     st.success(f"✅ Cupom **{cupom_digitado}** aplicado! (🎁 Frete Grátis liberado)")
                             else:
-                                st.warning(f"Válido para pedidos acima de R$ {cupom_encontrado.get('min_carrinho', 0):.2f}")
-                        else:
-                            st.error("Cupom inválido ou expirado.")
+                                st.warning(f"Válido para pedidos acima de R$ {float(cupom_encontrado.get('min_carrinho') or 0):.2f}")
+                        elif not cupom_qualquer:
+                            st.error("Cupom inválido ou não encontrado.")
 
                     cep_base_frete = (
                         st.session_state.get("busca_rapida_cep")
@@ -7798,16 +9090,75 @@ elif aba_loja == "carrinho":
                     frete_escolhido = opcoes_frete_disp[idx_frete_sel] if opcoes_frete_disp else {"id": "gratis", "nome": "🚚 Entrega Padrão", "prazo": "Imediato", "valor": 0.0}
                     frete_valor = float(frete_escolhido.get("valor") or 0.0)
                     modalidade_frete_nome = f"{frete_escolhido.get('nome', 'Entrega Padrão')} ({frete_escolhido.get('prazo', '')})"
+                    eh_retirada_checkout = (
+                        frete_escolhido.get("id") == "retirada"
+                        or "retira" in str(frete_escolhido.get("nome") or "").lower()
+                    )
+
+                    # Endereço Oficial da Loja / Centro de Distribuição (para quando a opção for Retirada)
+                    fisc_cd_chk = st.session_state.get("dados_fiscais_loja", {})
+                    nome_cd_loja = (fisc_cd_chk.get("local_nome") or cfg_loja.get("nome_loja") or "Centro de Distribuição Tags Informática").strip()
+                    rua_cd_loja = (fisc_cd_chk.get("rua_origem") or "Av. Djalma Batista").strip()
+                    num_cd_loja = (fisc_cd_chk.get("numero_origem") or "1000").strip()
+                    comp_cd_loja = (fisc_cd_chk.get("complemento_origem") or "").strip()
+                    bairro_cd_loja = (fisc_cd_chk.get("bairro_origem") or "Chapada").strip()
+                    cid_cd_loja = (fisc_cd_chk.get("cidade_origem") or "Manaus").strip()
+                    uf_cd_loja = (fisc_cd_chk.get("estado_origem") or "AM").strip().upper()
+                    cep_cd_loja = (fisc_cd_chk.get("cep_origem") or "69050-010").strip()
+                    endereco_loja_retirada = (
+                        f"{rua_cd_loja}, {num_cd_loja}"
+                        f"{(' - ' + comp_cd_loja) if comp_cd_loja else ''} — "
+                        f"{bairro_cd_loja}, {cid_cd_loja}/{uf_cd_loja} (CEP: {cep_cd_loja})"
+                    )
 
                     cfg_pag_chk = obter_pagamento_config()
-                    metodo_pag_sel = "mercadopago"
+                    metodos_disp_chk = []
+                    if cfg_pag_chk.get("mp_ativo", True):
+                        metodos_disp_chk.append(("mercadopago", "💙 Mercado Pago Oficial (Pix Imediato, Cartão até 12x ou Boleto)", 0.0))
+                    if cfg_pag_chk.get("presencial_ativo", False):
+                        metodos_disp_chk.append(("presencial", "💵 Pagar na Retirada / Na Entrega (Maquininha, Pix ou Dinheiro)", 0.0))
+                    if cfg_pag_chk.get("pix_ativo", False):
+                        d_px = float(cfg_pag_chk.get("desconto_pix_percentual") or 0.0)
+                        lbl_px_c = f"⚡ Pix Direto da Loja{f' (-{d_px:.0f}% OFF extra)' if d_px > 0 else ''}"
+                        metodos_disp_chk.append(("pix", lbl_px_c, d_px))
+                    if cfg_pag_chk.get("ton_ativo", False):
+                        metodos_disp_chk.append(("ton", "💚 Link Cartão Ton / Stone (até 12x)", 0.0))
+                    for mc_c in (cfg_pag_chk.get("metodos_personalizados") or []):
+                        if isinstance(mc_c, dict) and mc_c.get("ativo", True):
+                            d_mc = float(mc_c.get("desconto_pct") or 0.0)
+                            lbl_mc_c = f"{mc_c.get('nome', 'Pagamento')}{f' (-{d_mc:.0f}% OFF)' if d_mc > 0 else ''}"
+                            metodos_disp_chk.append((mc_c.get("id", "custom"), lbl_mc_c, d_mc))
+                    if not metodos_disp_chk:
+                        metodos_disp_chk.append(("mercadopago", "💙 Mercado Pago Oficial (Pix Imediato, Cartão até 12x ou Boleto)", 0.0))
+
+                    mapa_lbl_m_all = {m[0]: m[1] for m in metodos_disp_chk}
+                    mapa_dsc_m_all = {m[0]: m[2] for m in metodos_disp_chk}
+
+                    if len(metodos_disp_chk) == 1:
+                        metodo_pag_sel = metodos_disp_chk[0][0]
+                        pct_desc_metodo = metodos_disp_chk[0][2]
+                    else:
+                        st.divider()
+                        metodo_pag_sel = st.radio(
+                            "💳 Escolha a Forma de Pagamento:",
+                            options=[m[0] for m in metodos_disp_chk],
+                            format_func=lambda mid: mapa_lbl_m_all.get(mid, mid),
+                            key="radio_metodo_pagamento_carrinho",
+                        )
+                        pct_desc_metodo = mapa_dsc_m_all.get(metodo_pag_sel, 0.0)
+
                     desconto_pix_extra = 0.0
-                    total_calc = max(0.01, subtotal_calc - desconto_valor + frete_valor)
+                    if pct_desc_metodo > 0:
+                        desconto_pix_extra = max(0.0, (subtotal_calc - desconto_valor) * (pct_desc_metodo / 100.0))
+
+                    total_calc = max(0.01, subtotal_calc - desconto_valor - desconto_pix_extra + frete_valor)
 
                     st.divider()
                     st.markdown(f"**Subtotal ({qtd_itens_carrinho} itens):** R$ {subtotal_calc:.2f}")
                     if desconto_valor > 0:
                         st.markdown(f"**Desconto Cupom:** :green[-R$ {desconto_valor:.2f}]")
+                    if desconto_pix_extra > 0:
+                        st.markdown(f"**Desconto Forma de Pagamento (-{pct_desc_metodo:.0f}%):** :green[-R$ {desconto_pix_extra:.2f}]")
                     if frete_valor <= 0:
                         st.markdown(f"**Frete ({frete_escolhido.get('nome')}):** :green[GRÁTIS]")
                     else:
@@ -7815,10 +9166,10 @@ elif aba_loja == "carrinho":
 
                     st.markdown(f"### **Total Final:** :green[R$ {total_calc:.2f}]")
                     st.markdown(
-                        """
+                        f"""
                         <div style="background:#EFF6FF; border:1px solid #93C5FD; border-radius:12px; padding:12px 14px; margin-top:8px;">
                             <div style="font-weight:800; color:#1D4ED8; font-size:0.9rem; margin-bottom:4px;">
-                                💙 Pagamento Oficial via Mercado Pago
+                                {mapa_lbl_m_all.get(metodo_pag_sel, '💙 Pagamento Oficial via Mercado Pago')}
                             </div>
                             <div style="font-size:0.8rem; color:#1E293B; line-height:1.4;">
                                 Pague com <b>Pix (aprovação na hora)</b>, <b>Cartão de Crédito em até 12x</b>, <b>Débito</b>, <b>Saldo Mercado Pago</b> ou <b>Boleto</b> no próximo passo.
@@ -7830,10 +9181,14 @@ elif aba_loja == "carrinho":
 
             st.write("")
             with st.container(border=True):
-                st.markdown("#### 📋 Dados de Entrega & Faturamento Fiscal")
+                if eh_retirada_checkout:
+                    st.markdown("#### 🏢 Dados para Retirada na Loja & Faturamento Fiscal")
+                else:
+                    st.markdown("#### 📋 Dados de Entrega & Faturamento Fiscal")
+
                 if not cliente_atual:
                     c_av1, c_av2 = st.columns([3, 1.2])
-                    c_av1.info("💡 **Já possui cadastro?** Faça login para usar seu endereço salvo em 1 clique e acompanhar o pedido na sua conta.")
+                    c_av1.info("💡 **Já possui cadastro?** Faça login para confirmar seus dados em 1 clique e acompanhar o pedido na sua conta.")
                     with c_av2:
                         st.write("")
                         st.button(
@@ -7844,7 +9199,7 @@ elif aba_loja == "carrinho":
                             args=("conta",),
                         )
 
-                # Extrai e enriquece o endereço do cadastro do cliente (garantindo que Bairro, Cidade e UF nunca fiquem em branco!)
+                # Extrai e enriquece os dados do cadastro do cliente
                 cad_nome = (cliente_atual.get("nome") or "").strip() if cliente_atual else ""
                 cad_doc = (cliente_atual.get("cpf_cnpj") or "").strip() if cliente_atual else ""
                 cad_email = (cliente_atual.get("email") or "").strip() if cliente_atual else ""
@@ -7857,229 +9212,348 @@ elif aba_loja == "carrinho":
                 cad_cid = (cliente_atual.get("cidade") or "").strip() if cliente_atual else ""
                 cad_uf = (cliente_atual.get("estado") or cliente_atual.get("uf") or "").strip().upper() if cliente_atual else ""
 
-                # Se a rua não estiver separada mas houver endereco_completo no cadastro, extrai de forma inteligente
-                if not cad_rua and cad_end_full and cad_end_full.lower() != "não informado":
-                    partes_end = [p.strip() for p in cad_end_full.split(",") if p.strip()]
-                    if len(partes_end) >= 3:
-                        cad_rua = partes_end[0]
-                        if not cad_num:
-                            cad_num = partes_end[1]
-                        if not cad_bairro:
-                            cad_bairro = partes_end[2]
-                    else:
-                        cad_rua = cad_end_full
-
-                # Se o cliente tem CEP cadastrado mas Bairro/Cidade/UF estavam vazios no banco, tenta enriquecer pelo CEP (com cache)
-                cep_cad_num = re.sub(r"\D", "", cad_cep)
-                if len(cep_cad_num) == 8 and (not cad_bairro or not cad_cid or not cad_uf):
-                    cache_vcep = st.session_state.setdefault("_cache_viacep_cadastro", {})
-                    if cep_cad_num not in cache_vcep:
-                        try:
-                            r_vc_auto = requests.get(f"https://viacep.com.br/ws/{cep_cad_num}/json/", timeout=2)
-                            if r_vc_auto.status_code == 200 and "erro" not in r_vc_auto.json():
-                                cache_vcep[cep_cad_num] = r_vc_auto.json()
-                            else:
-                                cache_vcep[cep_cad_num] = {}
-                        except Exception:
-                            cache_vcep[cep_cad_num] = {}
-                    d_vc_cad = cache_vcep.get(cep_cad_num) or {}
-                    if d_vc_cad:
-                        if not cad_rua and d_vc_cad.get("logradouro"):
-                            cad_rua = d_vc_cad["logradouro"]
-                        if not cad_bairro and d_vc_cad.get("bairro"):
-                            cad_bairro = d_vc_cad["bairro"]
-                        if not cad_cid and d_vc_cad.get("localidade"):
-                            cad_cid = d_vc_cad["localidade"]
-                        if not cad_uf and d_vc_cad.get("uf"):
-                            cad_uf = d_vc_cad["uf"]
-
-                # Fallbacks inteligentes para nunca deixar Bairro, Número, Cidade ou UF em branco quando o cliente já tem cadastro
-                if cliente_atual and (cad_rua or cad_cep):
-                    if not cad_num:
-                        cad_num = "S/N"
-                    if not cad_bairro:
-                        cad_bairro = "Centro"
-                    if not cad_cid:
-                        cad_cid = "Manaus"
-                    if not cad_uf:
-                        cad_uf = "AM"
-
-                tem_endereco_cadastro = bool(cliente_atual and (cad_rua or cad_cep))
-                usar_end_cadastro = False
-
-                if tem_endereco_cadastro:
-                    resumo_end_cad = f"{cad_rua}, {cad_num} — {cad_bairro}, {cad_cid}/{cad_uf} (CEP: {cad_cep or 'Não informado'})"
-                    escolha_end_modo = st.radio(
-                        "📍 Escolha como definir o endereço de entrega:",
-                        options=["cadastro", "editar"],
-                        format_func=lambda op: (
-                            f"✅ Usar meu endereço do cadastro ({resumo_end_cad})"
-                            if op == "cadastro"
-                            else "✏️ Entregar em outro endereço ou editar meus dados abaixo"
-                        ),
-                        key="radio_usar_end_cadastro_chk",
-                    )
-                    usar_end_cadastro = (escolha_end_modo == "cadastro")
-
-                if usar_end_cadastro:
-                    st.markdown(
-                        f"""
-                        <div style="background:#ECFDF5; border:1px solid #10B981; border-radius:12px; padding:14px 18px; margin:8px 0 14px 0;">
-                            <div style="font-weight:800; color:#047857; font-size:0.95rem; margin-bottom:6px;">
-                                ✅ Usando Dados e Endereço do Seu Cadastro
-                            </div>
-                            <div style="font-size:0.86rem; color:#0F172A; line-height:1.55;">
-                                👤 <b>Cliente:</b> {cad_nome} &nbsp;|&nbsp; <b>CPF/CNPJ:</b> {cad_doc or 'Conforme cadastro'}<br>
-                                📱 <b>WhatsApp:</b> {cad_whats} &nbsp;|&nbsp; ✉️ <b>E-mail:</b> {cad_email}<br>
-                                📍 <b>Endereço de Entrega:</b> {resumo_end_cad}
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-                    submit_pedido_rapido = st.button(
-                        "💙 Confirmar Pedido com Meu Endereço do Cadastro e Pagar no Mercado Pago",
-                        key="btn_confirmar_pedido_end_cadastro",
-                        type="primary",
-                        use_container_width=True,
-                    )
-                    submit_pedido = False
-                    if submit_pedido_rapido:
-                        tipo_doc_c = "CNPJ" if len(re.sub(r"\D", "", cad_doc)) > 11 else "CPF"
-                        doc_c = cad_doc or "000.000.000-00"
-                        nome_c = cad_nome or "Cliente"
-                        email_c = cad_email or "cliente@tagsinfor.com"
-                        whats_c = cad_whats or WHATSAPP_LOJA
-                        cep_c = cad_cep or "69000-000"
-                        rua_c = cad_rua or cad_end_full or "Endereço do Cadastro"
-                        num_c = cad_num or "S/N"
-                        bairro_c = cad_bairro or "Centro"
-                        cid_c = cad_cid or "Manaus"
-                        uf_c = cad_uf or "AM"
-                        comp_c = ""
-                        senha_checkout_nova = ""
-                        submit_pedido = True
-                else:
-                    # Busca rápida de CEP via ViaCEP + Botão de Puxar do Cadastro
-                    col_vcep1, col_vcep2, col_vcep3 = st.columns([2.4, 1.1, 1.3] if cliente_atual else [2.8, 1.2, 0.01])
-                    with col_vcep1:
-                        cep_auto_in = st.text_input(
-                            "📍 Preenchimento Automático por CEP:",
-                            value=st.session_state.get("checkout_cep") or cad_cep,
-                            placeholder="Digite seu CEP (Ex: 69074-550)",
-                            key="busca_rapida_cep",
+                # =========================================================================
+                # MODO A: CLIENTE SELECIONOU RETIRADA NA LOJA / CENTRO DE DISTRIBUIÇÃO
+                # Exibe APENAS o Endereço da Loja para Retirada (sem pedir endereço de entrega!)
+                # =========================================================================
+                if eh_retirada_checkout:
+                    usar_dados_cad_retirada = False
+                    if cliente_atual and cad_nome:
+                        modo_ret_cli = st.radio(
+                            "👤 Identificação para Retirada na Loja:",
+                            options=["cadastro", "editar"],
+                            format_func=lambda op: (
+                                f"✅ Usar meus dados do cadastro para retirada ({cad_nome})"
+                                if op == "cadastro"
+                                else "✏️ Alterar Nome, CPF/CNPJ ou WhatsApp de quem irá retirar"
+                            ),
+                            key="radio_modo_retirada_chk",
                         )
-                    with col_vcep2:
-                        st.write("")
-                        if st.button("⚡ Buscar CEP", key="btn_exec_viacep", use_container_width=True):
-                            cep_limpo = re.sub(r"\D", "", cep_auto_in)
-                            if len(cep_limpo) == 8:
-                                try:
-                                    r_cep = requests.get(f"https://viacep.com.br/ws/{cep_limpo}/json/", timeout=3)
-                                    if r_cep.status_code == 200:
-                                        d_cep = r_cep.json()
-                                        if "erro" not in d_cep:
-                                            st.session_state["checkout_cep"] = cep_auto_in
-                                            st.session_state["checkout_rua"] = d_cep.get("logradouro", "")
-                                            st.session_state["checkout_bairro"] = d_cep.get("bairro", "")
-                                            st.session_state["checkout_cidade"] = d_cep.get("localidade", "Manaus")
-                                            st.session_state["checkout_uf"] = d_cep.get("uf", "AM")
-                                            st.success("✅ Endereço preenchido pelo CEP!")
-                                            st.rerun()
-                                        else:
-                                            st.warning("CEP não localizado.")
-                                except Exception:
-                                    st.warning("Serviço de CEP indisponível no momento. Usando dados do cadastro/manual.")
-                            else:
-                                st.error("Informe um CEP válido com 8 números.")
-                    with col_vcep3:
-                        if cliente_atual:
-                            st.write("")
-                            if st.button("📍 Puxar do Cadastro", key="btn_puxar_end_cad_manual", use_container_width=True):
-                                st.session_state["checkout_cep"] = cad_cep
-                                st.session_state["checkout_rua"] = cad_rua
-                                st.session_state["checkout_bairro"] = cad_bairro or "Centro"
-                                st.session_state["checkout_cidade"] = cad_cid or "Manaus"
-                                st.session_state["checkout_uf"] = cad_uf or "AM"
-                                st.success("✅ Endereço do cadastro carregado nos campos abaixo!")
-                                st.rerun()
+                        usar_dados_cad_retirada = (modo_ret_cli == "cadastro")
 
-                    def_nome = cad_nome
-                    def_doc = cad_doc
-                    def_email = cad_email
-                    def_whats = cad_whats
-                    def_cep = st.session_state.get("checkout_cep") or cad_cep
-                    def_rua = st.session_state.get("checkout_rua") or cad_rua
-                    def_num = cad_num or ("S/N" if cliente_atual else "")
-                    def_bairro = st.session_state.get("checkout_bairro") or cad_bairro or ("Centro" if cliente_atual else "")
-                    def_cid = st.session_state.get("checkout_cidade") or cad_cid or ("Manaus" if cliente_atual else "")
-                    def_uf = st.session_state.get("checkout_uf") or cad_uf or "AM"
-
-                    with st.form("form_checkout_carrinho_multi"):
-                        c_doc_t1, c_doc_t2 = st.columns([1.1, 2])
-                        with c_doc_t1:
-                            tipo_doc_c = st.radio("Documento:", ["CPF", "CNPJ"], horizontal=True)
-                        with c_doc_t2:
-                            doc_c = st.text_input(f"{tipo_doc_c} *", value=def_doc, placeholder="000.000.000-00")
-
-                        col_nf1, col_nf2 = st.columns(2)
-                        nome_c = col_nf1.text_input("Nome Completo ou Razão Social *", value=def_nome, placeholder="Ex: Maria Izabel")
-                        email_c = col_nf2.text_input("E-mail para Nota Fiscal e Rastreio *", value=def_email, placeholder="cliente@exemplo.com")
-
-                        c_w1, c_w2 = st.columns(2)
-                        whats_c = c_w1.text_input("WhatsApp com DDD *", value=def_whats, placeholder="Ex: 92981234567")
-                        cep_c = c_w2.text_input("CEP *", value=def_cep, placeholder="69074-550")
-
-                        c_end1, c_end2 = st.columns([3, 1])
-                        rua_c = c_end1.text_input("Logradouro / Endereço *", value=def_rua, placeholder="Ex: Rua Israel Benchimol")
-                        num_c = c_end2.text_input("Número *", value=def_num, placeholder="Ex: 288A ou S/N")
-
-                        c_end3, c_end4, c_end5 = st.columns([1.5, 1.5, 1])
-                        bairro_c = c_end3.text_input("Bairro *", value=def_bairro, placeholder="Ex: Morro da Liberdade")
-                        cid_c = c_end4.text_input("Cidade *", value=def_cid, placeholder="Ex: Manaus")
-                        uf_c = c_end5.text_input("UF *", value=def_uf, max_chars=2)
-
-                        comp_c = st.text_input("Complemento (opcional)", placeholder="Ex: Apto 102, Bloco B")
-
-                        salvar_end_no_cadastro = True
-                        if cliente_atual:
-                            salvar_end_no_cadastro = st.checkbox(
-                                "💾 Salvar/atualizar este endereço como meu endereço padrão no cadastro",
-                                value=True,
-                            )
-
-                        senha_checkout_nova = ""
-                        if not cliente_atual:
-                            senha_checkout_nova = st.text_input(
-                                "🔑 Criar uma senha para acompanhar e rastrear este pedido depois (opcional):",
-                                type="password",
-                                placeholder="Digite uma senha para criar sua conta automaticamente",
-                            )
-
-                        submit_pedido = st.form_submit_button(
-                            "💙 Confirmar Pedido e Pagar no Mercado Pago",
+                    if usar_dados_cad_retirada:
+                        st.markdown(
+                            f"""
+                            <div style="background:#ECFDF5; border:1px solid #10B981; border-radius:12px; padding:14px 18px; margin:8px 0 14px 0;">
+                                <div style="font-weight:800; color:#047857; font-size:0.95rem; margin-bottom:6px;">
+                                    🏢 Retirada Presencial na Loja / Centro de Distribuição (Frete Grátis)
+                                </div>
+                                <div style="font-size:0.86rem; color:#0F172A; line-height:1.6;">
+                                    👤 <b>Cliente que irá retirar:</b> {cad_nome} &nbsp;|&nbsp; <b>CPF/CNPJ:</b> {cad_doc or 'Conforme cadastro'}<br>
+                                    📱 <b>WhatsApp:</b> {cad_whats} &nbsp;|&nbsp; ✉️ <b>E-mail:</b> {cad_email}<br>
+                                    📍 <b>Endereço da Loja para Retirada:</b> <b>{nome_cd_loja}</b> — {endereco_loja_retirada}<br>
+                                    ⏱️ <b>Liberação:</b> {frete_escolhido.get('prazo', 'Pronto para retirada em 2h após confirmação')}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        submit_pedido_rapido_ret = st.button(
+                            "💙 Confirmar Pedido para Retirada na Loja e Ir para o Pagamento",
+                            key="btn_confirmar_pedido_retirada_cadastro",
                             type="primary",
                             use_container_width=True,
                         )
-                        if submit_pedido:
-                            # Completa automaticamente Número, Bairro, Cidade e UF caso o cliente tenha preenchido a Rua completa
-                            num_c = (num_c or "").strip() or "S/N"
-                            bairro_c = (bairro_c or "").strip() or "Centro"
-                            cid_c = (cid_c or "").strip() or "Manaus"
-                            uf_c = ((uf_c or "").strip() or "AM").upper()
+                        submit_pedido = False
+                        if submit_pedido_rapido_ret:
+                            tipo_doc_c = "CNPJ" if len(re.sub(r"\D", "", cad_doc)) > 11 else "CPF"
+                            doc_c = cad_doc or "000.000.000-00"
+                            nome_c = cad_nome or "Cliente"
+                            email_c = cad_email or "cliente@tagsinfor.com"
+                            whats_c = cad_whats or WHATSAPP_LOJA
+                            cep_c = cep_cd_loja
+                            rua_c = f"RETIRADA NA LOJA ({nome_cd_loja}) - {rua_cd_loja}"
+                            num_c = num_cd_loja
+                            bairro_c = bairro_cd_loja
+                            cid_c = cid_cd_loja
+                            uf_c = uf_cd_loja
+                            comp_c = comp_cd_loja
+                            senha_checkout_nova = ""
+                            submit_pedido = True
+                    else:
+                        st.markdown(
+                            f"""
+                            <div style="background:#EFF6FF; border:1px solid #93C5FD; border-radius:12px; padding:12px 16px; margin:6px 0 14px 0;">
+                                <div style="font-weight:800; color:#1D4ED8; font-size:0.92rem; margin-bottom:4px;">
+                                    🏢 Local de Retirada do Seu Pedido (Endereço da Loja / CD):
+                                </div>
+                                <div style="font-size:0.86rem; color:#0F172A; line-height:1.5;">
+                                    📍 <b>{nome_cd_loja}:</b> {endereco_loja_retirada}<br>
+                                    ⏱️ <b>Prazo de Liberação:</b> {frete_escolhido.get('prazo', 'Pronto para retirada em 2h após confirmação')}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        with st.form("form_checkout_retirada_loja"):
+                            c_doc_r1, c_doc_r2 = st.columns([1.1, 2])
+                            with c_doc_r1:
+                                tipo_doc_c = st.radio("Documento:", ["CPF", "CNPJ"], horizontal=True, key="rad_doc_ret")
+                            with c_doc_r2:
+                                doc_c = st.text_input(f"{tipo_doc_c} *", value=cad_doc, placeholder="000.000.000-00")
+
+                            col_nfr1, col_nfr2 = st.columns(2)
+                            nome_c = col_nfr1.text_input("Nome Completo de quem irá retirar *", value=cad_nome, placeholder="Ex: Maria Izabel")
+                            email_c = col_nfr2.text_input("E-mail para Nota Fiscal e Aviso de Retirada *", value=cad_email, placeholder="cliente@exemplo.com")
+
+                            whats_c = st.text_input("WhatsApp com DDD (para avisarmos quando estiver pronto) *", value=cad_whats, placeholder="Ex: 92981234567")
+
+                            senha_checkout_nova = ""
+                            if not cliente_atual:
+                                senha_checkout_nova = st.text_input(
+                                    "🔑 Criar uma senha para acompanhar este pedido depois (opcional):",
+                                    type="password",
+                                    placeholder="Digite uma senha para criar sua conta automaticamente",
+                                )
+
+                            submit_pedido = st.form_submit_button(
+                                "💙 Confirmar Pedido para Retirada na Loja e Ir para o Pagamento",
+                                type="primary",
+                                use_container_width=True,
+                            )
+                            if submit_pedido:
+                                cep_c = cep_cd_loja
+                                rua_c = f"RETIRADA NA LOJA ({nome_cd_loja}) - {rua_cd_loja}"
+                                num_c = num_cd_loja
+                                bairro_c = bairro_cd_loja
+                                cid_c = cid_cd_loja
+                                uf_c = uf_cd_loja
+                                comp_c = comp_cd_loja
+
+                # =========================================================================
+                # MODO B: CLIENTE SELECIONOU ENTREGA (MOTOBOY, CORREIOS PAC OU SEDEX)
+                # Exibe o endereço de entrega do cadastro do cliente ou formulário de entrega
+                # =========================================================================
+                else:
+                    # Se a rua não estiver separada mas houver endereco_completo no cadastro, extrai de forma inteligente
+                    if not cad_rua and cad_end_full and cad_end_full.lower() != "não informado":
+                        partes_end = [p.strip() for p in cad_end_full.split(",") if p.strip()]
+                        if len(partes_end) >= 3:
+                            cad_rua = partes_end[0]
+                            if not cad_num:
+                                cad_num = partes_end[1]
+                            if not cad_bairro:
+                                cad_bairro = partes_end[2]
+                        else:
+                            cad_rua = cad_end_full
+
+                    # Se o cliente tem CEP cadastrado mas Bairro/Cidade/UF estavam vazios no banco, tenta enriquecer pelo CEP (com cache)
+                    cep_cad_num = re.sub(r"\D", "", cad_cep)
+                    if len(cep_cad_num) == 8 and (not cad_bairro or not cad_cid or not cad_uf):
+                        cache_vcep = st.session_state.setdefault("_cache_viacep_cadastro", {})
+                        if cep_cad_num not in cache_vcep:
+                            try:
+                                r_vc_auto = requests.get(f"https://viacep.com.br/ws/{cep_cad_num}/json/", timeout=2)
+                                if r_vc_auto.status_code == 200 and "erro" not in r_vc_auto.json():
+                                    cache_vcep[cep_cad_num] = r_vc_auto.json()
+                                else:
+                                    cache_vcep[cep_cad_num] = {}
+                            except Exception:
+                                cache_vcep[cep_cad_num] = {}
+                        d_vc_cad = cache_vcep.get(cep_cad_num) or {}
+                        if d_vc_cad:
+                            if not cad_rua and d_vc_cad.get("logradouro"):
+                                cad_rua = d_vc_cad["logradouro"]
+                            if not cad_bairro and d_vc_cad.get("bairro"):
+                                cad_bairro = d_vc_cad["bairro"]
+                            if not cad_cid and d_vc_cad.get("localidade"):
+                                cad_cid = d_vc_cad["localidade"]
+                            if not cad_uf and d_vc_cad.get("uf"):
+                                cad_uf = d_vc_cad["uf"]
+
+                    # Fallbacks inteligentes para nunca deixar Bairro, Número, Cidade ou UF em branco quando o cliente já tem cadastro
+                    if cliente_atual and (cad_rua or cad_cep):
+                        if not cad_num:
+                            cad_num = "S/N"
+                        if not cad_bairro:
+                            cad_bairro = "Centro"
+                        if not cad_cid:
+                            cad_cid = "Manaus"
+                        if not cad_uf:
+                            cad_uf = "AM"
+
+                    tem_endereco_cadastro = bool(cliente_atual and (cad_rua or cad_cep))
+                    usar_end_cadastro = False
+
+                    if tem_endereco_cadastro:
+                        resumo_end_cad = f"{cad_rua}, {cad_num} — {cad_bairro}, {cad_cid}/{cad_uf} (CEP: {cad_cep or 'Não informado'})"
+                        escolha_end_modo = st.radio(
+                            "📍 Escolha como definir o endereço de entrega:",
+                            options=["cadastro", "editar"],
+                            format_func=lambda op: (
+                                f"✅ Usar meu endereço do cadastro ({resumo_end_cad})"
+                                if op == "cadastro"
+                                else "✏️ Entregar em outro endereço ou editar meus dados abaixo"
+                            ),
+                            key="radio_usar_end_cadastro_chk",
+                        )
+                        usar_end_cadastro = (escolha_end_modo == "cadastro")
+
+                    if usar_end_cadastro:
+                        st.markdown(
+                            f"""
+                            <div style="background:#ECFDF5; border:1px solid #10B981; border-radius:12px; padding:14px 18px; margin:8px 0 14px 0;">
+                                <div style="font-weight:800; color:#047857; font-size:0.95rem; margin-bottom:6px;">
+                                    ✅ Usando Dados e Endereço do Seu Cadastro
+                                </div>
+                                <div style="font-size:0.86rem; color:#0F172A; line-height:1.55;">
+                                    👤 <b>Cliente:</b> {cad_nome} &nbsp;|&nbsp; <b>CPF/CNPJ:</b> {cad_doc or 'Conforme cadastro'}<br>
+                                    📱 <b>WhatsApp:</b> {cad_whats} &nbsp;|&nbsp; ✉️ <b>E-mail:</b> {cad_email}<br>
+                                    📍 <b>Endereço de Entrega:</b> {resumo_end_cad}
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+                        submit_pedido_rapido = st.button(
+                            "💙 Confirmar Pedido com Meu Endereço do Cadastro e Ir para o Pagamento",
+                            key="btn_confirmar_pedido_end_cadastro",
+                            type="primary",
+                            use_container_width=True,
+                        )
+                        submit_pedido = False
+                        if submit_pedido_rapido:
+                            tipo_doc_c = "CNPJ" if len(re.sub(r"\D", "", cad_doc)) > 11 else "CPF"
+                            doc_c = cad_doc or "000.000.000-00"
+                            nome_c = cad_nome or "Cliente"
+                            email_c = cad_email or "cliente@tagsinfor.com"
+                            whats_c = cad_whats or WHATSAPP_LOJA
+                            cep_c = cad_cep or "69000-000"
+                            rua_c = cad_rua or cad_end_full or "Endereço do Cadastro"
+                            num_c = cad_num or "S/N"
+                            bairro_c = cad_bairro or "Centro"
+                            cid_c = cad_cid or "Manaus"
+                            uf_c = cad_uf or "AM"
+                            comp_c = ""
+                            senha_checkout_nova = ""
+                            submit_pedido = True
+                    else:
+                        # Busca rápida de CEP via ViaCEP + Botão de Puxar do Cadastro
+                        col_vcep1, col_vcep2, col_vcep3 = st.columns([2.4, 1.1, 1.3] if cliente_atual else [2.8, 1.2, 0.01])
+                        with col_vcep1:
+                            cep_auto_in = st.text_input(
+                                "📍 Preenchimento Automático por CEP:",
+                                value=st.session_state.get("checkout_cep") or cad_cep,
+                                placeholder="Digite seu CEP (Ex: 69074-550)",
+                                key="busca_rapida_cep",
+                            )
+                        with col_vcep2:
+                            st.write("")
+                            if st.button("⚡ Buscar CEP", key="btn_exec_viacep", use_container_width=True):
+                                cep_limpo = re.sub(r"\D", "", cep_auto_in)
+                                if len(cep_limpo) == 8:
+                                    try:
+                                        r_cep = requests.get(f"https://viacep.com.br/ws/{cep_limpo}/json/", timeout=3)
+                                        if r_cep.status_code == 200:
+                                            d_cep = r_cep.json()
+                                            if "erro" not in d_cep:
+                                                st.session_state["checkout_cep"] = cep_auto_in
+                                                st.session_state["checkout_rua"] = d_cep.get("logradouro", "")
+                                                st.session_state["checkout_bairro"] = d_cep.get("bairro", "")
+                                                st.session_state["checkout_cidade"] = d_cep.get("localidade", "Manaus")
+                                                st.session_state["checkout_uf"] = d_cep.get("uf", "AM")
+                                                st.success("✅ Endereço preenchido pelo CEP!")
+                                                st.rerun()
+                                            else:
+                                                st.warning("CEP não localizado.")
+                                    except Exception:
+                                        st.warning("Serviço de CEP indisponível no momento. Usando dados do cadastro/manual.")
+                                else:
+                                    st.error("Informe um CEP válido com 8 números.")
+                        with col_vcep3:
+                            if cliente_atual:
+                                st.write("")
+                                if st.button("📍 Puxar do Cadastro", key="btn_puxar_end_cad_manual", use_container_width=True):
+                                    st.session_state["checkout_cep"] = cad_cep
+                                    st.session_state["checkout_rua"] = cad_rua
+                                    st.session_state["checkout_bairro"] = cad_bairro or "Centro"
+                                    st.session_state["checkout_cidade"] = cad_cid or "Manaus"
+                                    st.session_state["checkout_uf"] = cad_uf or "AM"
+                                    st.success("✅ Endereço do cadastro carregado nos campos abaixo!")
+                                    st.rerun()
+
+                        def_nome = cad_nome
+                        def_doc = cad_doc
+                        def_email = cad_email
+                        def_whats = cad_whats
+                        def_cep = st.session_state.get("checkout_cep") or cad_cep
+                        def_rua = st.session_state.get("checkout_rua") or cad_rua
+                        def_num = cad_num or ("S/N" if cliente_atual else "")
+                        def_bairro = st.session_state.get("checkout_bairro") or cad_bairro or ("Centro" if cliente_atual else "")
+                        def_cid = st.session_state.get("checkout_cidade") or cad_cid or ("Manaus" if cliente_atual else "")
+                        def_uf = st.session_state.get("checkout_uf") or cad_uf or "AM"
+
+                        with st.form("form_checkout_carrinho_multi"):
+                            c_doc_t1, c_doc_t2 = st.columns([1.1, 2])
+                            with c_doc_t1:
+                                tipo_doc_c = st.radio("Documento:", ["CPF", "CNPJ"], horizontal=True)
+                            with c_doc_t2:
+                                doc_c = st.text_input(f"{tipo_doc_c} *", value=def_doc, placeholder="000.000.000-00")
+
+                            col_nf1, col_nf2 = st.columns(2)
+                            nome_c = col_nf1.text_input("Nome Completo ou Razão Social *", value=def_nome, placeholder="Ex: Maria Izabel")
+                            email_c = col_nf2.text_input("E-mail para Nota Fiscal e Rastreio *", value=def_email, placeholder="cliente@exemplo.com")
+
+                            c_w1, c_w2 = st.columns(2)
+                            whats_c = c_w1.text_input("WhatsApp com DDD *", value=def_whats, placeholder="Ex: 92981234567")
+                            cep_c = c_w2.text_input("CEP *", value=def_cep, placeholder="69074-550")
+
+                            c_end1, c_end2 = st.columns([3, 1])
+                            rua_c = c_end1.text_input("Logradouro / Endereço *", value=def_rua, placeholder="Ex: Rua Israel Benchimol")
+                            num_c = c_end2.text_input("Número *", value=def_num, placeholder="Ex: 288A ou S/N")
+
+                            c_end3, c_end4, c_end5 = st.columns([1.5, 1.5, 1])
+                            bairro_c = c_end3.text_input("Bairro *", value=def_bairro, placeholder="Ex: Morro da Liberdade")
+                            cid_c = c_end4.text_input("Cidade *", value=def_cid, placeholder="Ex: Manaus")
+                            uf_c = c_end5.text_input("UF *", value=def_uf, max_chars=2)
+
+                            comp_c = st.text_input("Complemento (opcional)", placeholder="Ex: Apto 102, Bloco B")
+
+                            salvar_end_no_cadastro = True
+                            if cliente_atual:
+                                salvar_end_no_cadastro = st.checkbox(
+                                    "💾 Salvar/atualizar este endereço como meu endereço padrão no cadastro",
+                                    value=True,
+                                )
+
+                            senha_checkout_nova = ""
+                            if not cliente_atual:
+                                senha_checkout_nova = st.text_input(
+                                    "🔑 Criar uma senha para acompanhar e rastrear este pedido depois (opcional):",
+                                    type="password",
+                                    placeholder="Digite uma senha para criar sua conta automaticamente",
+                                )
+
+                            submit_pedido = st.form_submit_button(
+                                "💙 Confirmar Pedido e Ir para o Pagamento",
+                                type="primary",
+                                use_container_width=True,
+                            )
+                            if submit_pedido:
+                                # Completa automaticamente Número, Bairro, Cidade e UF caso o cliente tenha preenchido a Rua completa
+                                num_c = (num_c or "").strip() or "S/N"
+                                bairro_c = (bairro_c or "").strip() or "Centro"
+                                cid_c = (cid_c or "").strip() or "Manaus"
+                                uf_c = ((uf_c or "").strip() or "AM").upper()
 
                 if submit_pedido:
                     if not (nome_c and doc_c and email_c and whats_c and cep_c and rua_c):
-                        st.error("Preencha Nome, CPF/CNPJ, E-mail, WhatsApp, CEP e Logradouro/Endereço para concluir o pedido.")
+                        if eh_retirada_checkout:
+                            st.error("Preencha Nome, CPF/CNPJ, E-mail e WhatsApp para confirmar seu pedido para retirada na loja.")
+                        else:
+                            st.error("Preencha Nome, CPF/CNPJ, E-mail, WhatsApp, CEP e Logradouro/Endereço para concluir o pedido.")
                     else:
                         num_c = (num_c or "").strip() or "S/N"
                         bairro_c = (bairro_c or "").strip() or "Centro"
                         cid_c = (cid_c or "").strip() or "Manaus"
                         uf_c = ((uf_c or "").strip() or "AM").upper()
-                        endereco_c = f"{rua_c}, {num_c}{(' - ' + comp_c) if comp_c else ''}, {bairro_c}, {cid_c}/{uf_c} - CEP {cep_c}"
+                        if eh_retirada_checkout:
+                            endereco_c = f"RETIRADA NA LOJA ({nome_cd_loja}): {endereco_loja_retirada}"
+                        else:
+                            endereco_c = f"{rua_c}, {num_c}{(' - ' + comp_c) if comp_c else ''}, {bairro_c}, {cid_c}/{uf_c} - CEP {cep_c}"
 
-                        # Se o cliente logado editou o endereço, já atualiza o cadastro dele automaticamente
-                        if cliente_atual:
+                        # Se o cliente logado editou o endereço de ENTREGA (não retirada), atualiza o cadastro dele automaticamente
+                        if cliente_atual and not eh_retirada_checkout:
                             cliente_atual["cep"] = cep_c
                             cliente_atual["rua"] = rua_c
                             cliente_atual["numero"] = num_c
@@ -8210,12 +9684,15 @@ elif aba_loja == "carrinho":
                             except Exception:
                                 pass
 
-                        # Resolver Link Mercado Pago do pedido
+                        # Resolver Links de Pagamento do pedido
                         link_mp_especifico = ""
+                        link_ton_especifico = ""
                         for it_c in carrinho_atual:
                             info_l_it = obter_links_pagamento_produto(it_c)
                             if not link_mp_especifico and info_l_it["link_mp_produto"]:
                                 link_mp_especifico = info_l_it["link_mp_produto"]
+                            if not link_ton_especifico and info_l_it["link_ton_produto"]:
+                                link_ton_especifico = info_l_it["link_ton_produto"]
 
                         resumo_titulos = ", ".join(f"{i.get('qtd', 1)}x {i.get('titulo')}" for i in carrinho_atual)
                         link_mp_gerado = link_mp_especifico or ""
@@ -8231,9 +9708,9 @@ elif aba_loja == "carrinho":
                                 "preco_unit": float(it_c.get("preco_venda", 0)),
                                 "preco_custo": float(info_custo_chk.get("preco_custo") or 0.0),
                                 "cupom": cupom_digitado if (desconto_valor > 0 or cupom_frete_gratis_ativo) else None,
-                                "metodo_pagamento": "mercadopago",
+                                "metodo_pagamento": metodo_pag_sel,
                                 "modalidade_frete": modalidade_frete_nome,
-                                "link_ton": "",
+                                "link_ton": link_ton_especifico,
                                 "link_mp": link_mp_gerado,
                                 "pix_mp_qr_code": "",
                                 "pix_mp_payment_id": "",
@@ -8252,7 +9729,11 @@ elif aba_loja == "carrinho":
                                 },
                             })
 
-                        desconto_total_ped = desconto_valor
+                        custo_total_pedido_chk = sum(
+                            float(it_j.get("preco_custo") or 0.0) * max(1, int(it_j.get("qtd") or 1))
+                            for it_j in itens_pedido_json
+                        )
+                        desconto_total_ped = desconto_valor + desconto_pix_extra
                         pedido_novo = {
                             "cliente_id": cliente_id,
                             "cupom_id": cupom_id,
@@ -8268,6 +9749,9 @@ elif aba_loja == "carrinho":
                             "valor_total": total_calc,
                             "itens": itens_pedido_json,
                             "status_pagamento": "pendente",
+                            "status_entrega": "pendente",
+                            "metodo_pagamento": metodo_pag_sel,
+                            "modalidade_frete": modalidade_frete_nome,
                         }
                         try:
                             res_p = supabase.table("pedidos").insert(pedido_novo).execute()
@@ -8275,14 +9759,16 @@ elif aba_loja == "carrinho":
                             pedido_novo_fb = dict(pedido_novo)
                             pedido_novo_fb.pop("cliente_id", None)
                             pedido_novo_fb.pop("cupom_id", None)
+                            pedido_novo_fb.pop("status_entrega", None)
+                            pedido_novo_fb.pop("metodo_pagamento", None)
+                            pedido_novo_fb.pop("modalidade_frete", None)
                             res_p = supabase.table("pedidos").insert(pedido_novo_fb).execute()
                         id_ped = res_p.data[0]["id"] if res_p.data else "NOVO"
 
                         if res_p.data and "id" in res_p.data[0]:
                             try:
                                 supabase.table("pedidos").update({
-                                    "metodo_pagamento": "mercadopago",
-                                    "modalidade_frete": modalidade_frete_nome,
+                                    "valor_custo": custo_total_pedido_chk,
                                 }).eq("id", id_ped).execute()
                             except Exception:
                                 pass
@@ -8290,6 +9776,7 @@ elif aba_loja == "carrinho":
                         # 3. Inserir itens relacionais na tabela pedido_itens e atualizar estoque
                         for it_c in carrinho_atual:
                             if res_p.data and "id" in res_p.data[0]:
+                                info_cst_pi = obter_links_pagamento_produto(it_c)
                                 try:
                                     supabase.table("pedido_itens").insert({
                                         "pedido_id": id_ped,
@@ -8297,10 +9784,21 @@ elif aba_loja == "carrinho":
                                         "titulo": it_c.get("titulo", ""),
                                         "quantidade": int(it_c.get("qtd", 1)),
                                         "preco_unitario": float(it_c.get("preco_venda", 0)),
+                                        "preco_custo": float(info_cst_pi.get("preco_custo") or 0.0),
                                         "subtotal": float(it_c.get("preco_venda", 0)) * int(it_c.get("qtd", 1)),
                                     }).execute()
                                 except Exception:
-                                    pass
+                                    try:
+                                        supabase.table("pedido_itens").insert({
+                                            "pedido_id": id_ped,
+                                            "produto_id": it_c.get("id"),
+                                            "titulo": it_c.get("titulo", ""),
+                                            "quantidade": int(it_c.get("qtd", 1)),
+                                            "preco_unitario": float(it_c.get("preco_venda", 0)),
+                                            "subtotal": float(it_c.get("preco_venda", 0)) * int(it_c.get("qtd", 1)),
+                                        }).execute()
+                                    except Exception:
+                                        pass
                             if it_c.get("tipo_venda") == "estoque_proprio" and it_c.get("estoque"):
                                 novo_est = max(0, int(it_c["estoque"]) - int(it_c.get("qtd", 1)))
                                 try:
@@ -8345,7 +9843,7 @@ elif aba_loja == "carrinho":
                                     json={
                                         "evento": "novo_pedido_separar",
                                         "pedido_id": id_ped,
-                                        "metodo_pagamento": "mercadopago",
+                                        "metodo_pagamento": metodo_pag_sel,
                                         "modalidade_frete": modalidade_frete_nome,
                                         "cliente_nome": nome_c,
                                         "cliente_whatsapp": whats_c,
@@ -8368,8 +9866,9 @@ elif aba_loja == "carrinho":
                             "total": total_calc,
                             "frete_valor": frete_valor,
                             "modalidade_frete": modalidade_frete_nome,
-                            "metodo_pagamento": "mercadopago",
-                            "link_ton": "",
+                            "metodo_pagamento": metodo_pag_sel,
+                            "metodo_label": mapa_lbl_m_all.get(metodo_pag_sel, "Mercado Pago Oficial"),
+                            "link_ton": link_ton_especifico,
                             "link_mp": link_mp_gerado,
                             "pix_mp_qr_code": dados_pix_mp.get("qr_code") or "",
                             "pix_mp_qr_base64": dados_pix_mp.get("qr_code_base64") or "",
@@ -8385,27 +9884,87 @@ elif aba_loja == "carrinho":
                         }
                         st.rerun()
 
-        # ÁREA DE PAGAMENTO EXCLUSIVA MERCADO PAGO (PIX DIRETO NA TELA + CHECKOUT PRO CARTÃO/BOLETO)
+        # ÁREA DE PAGAMENTO DO PEDIDO (MERCADO PAGO OFICIAL + OUTRAS FORMAS CADASTRADAS)
         if st.session_state.get("pedido_concluido") and "detalhes_pedido" in st.session_state:
             det = st.session_state["detalhes_pedido"]
             cfg_pag_pos = obter_pagamento_config()
+            met_escolhido = det.get("metodo_pagamento") or "mercadopago"
+            met_label_pos = det.get("metodo_label") or ("Mercado Pago Oficial" if met_escolhido == "mercadopago" else met_escolhido)
 
-            st.success(f"🎉 **Pedido #{det['id']} Confirmado com Sucesso!** Escolha abaixo pagar no **QR Code Pix Mercado Pago** ou no **Cartão em até 12x / Boleto**:")
+            st.success(f"🎉 **Pedido #{det['id']} Confirmado com Sucesso!** Forma escolhida: **{met_label_pos}**")
 
             msg_separar_loja = (
                 f"🛍️ *NOVO PEDIDO #{det['id']} — SEPARAR PRODUTO!*\n\n"
                 f"Olá equipe *{cfg_loja.get('nome_loja', 'Tags Informática')}*! Acabei de confirmar meu pedido no site:\n"
                 f"• *Pedido:* #{det['id']}\n"
-                f"• *Forma de Pagamento:* Mercado Pago Oficial\n"
+                f"• *Forma de Pagamento:* {met_label_pos}\n"
                 f"• *Itens para Separar:* {det['titulo']}\n"
                 f"• *Frete / Entrega:* {det.get('modalidade_frete', 'Padrão')}\n"
                 f"• *Valor Total:* R$ {det['total']:.2f}\n\n"
                 f"👤 *Cliente:* {det['cliente_nome']}\n"
                 f"📱 *WhatsApp:* {det['whatsapp']}\n"
-                f"📍 *Endereço:* {det.get('endereco', '')}\n\n"
-                f"✅ Podem separar meu(s) produto(s)! Estou concluindo o pagamento no Mercado Pago."
+                f"📍 *Local / Endereço:* {det.get('endereco', '')}\n\n"
+                f"✅ Podem separar meu(s) produto(s)!"
             )
             url_whats_separar = f"https://wa.me/55{whats_num_clean}?text={urllib.parse.quote(msg_separar_loja)}"
+
+            # Se o cliente escolheu uma forma de pagamento extra ou personalizada (diferente do Mercado Pago), exibe o bloco dela em destaque:
+            if met_escolhido != "mercadopago":
+                with st.container(border=True):
+                    if met_escolhido == "presencial":
+                        st.markdown("### 💵 Pagamento na Retirada / Na Entrega")
+                        st.info(cfg_pag_pos.get("presencial_instrucoes") or "Pague diretamente ao retirar seu pedido na loja ou na entrega via Motoboy.")
+                        st.link_button(
+                            "📲 Confirmar Pedido & Horário de Retirada/Entrega no WhatsApp",
+                            url_whats_separar,
+                            type="primary",
+                            use_container_width=True,
+                        )
+                    elif met_escolhido == "pix":
+                        st.markdown("### ⚡ Pix Direto na Chave da Loja (Taxa Zero)")
+                        chave_loja_p = cfg_pag_pos.get("chave_pix") or CHAVE_PIX
+                        payload_emv_loja = gerar_pix_bacen(
+                            chave_loja_p,
+                            cfg_pag_pos.get("nome_beneficiario") or NOME_BENEFICIARIO,
+                            cfg_pag_pos.get("cidade_beneficiario") or CIDADE_BENEFICIARIO,
+                            float(det.get("total") or 0.0),
+                            f"PED{det['id']}",
+                        )
+                        c_px1, c_px2 = st.columns([1, 2])
+                        with c_px1:
+                            url_qr_emv = f"https://api.qrserver.com/v1/create-qr-code/?size=240x240&data={urllib.parse.quote(payload_emv_loja)}"
+                            st.image(url_qr_emv, caption=f"QR Code Pix Direto — R$ {det['total']:.2f}", width=210)
+                        with c_px2:
+                            st.markdown(f"**Chave Pix:** `{chave_loja_p}`")
+                            st.markdown("**Código Pix Copia e Cola:**")
+                            st.code(payload_emv_loja, language="text")
+                            st.link_button("📲 Enviar Comprovante Pix no WhatsApp", url_whats_separar, type="primary", use_container_width=True)
+                    elif met_escolhido == "ton":
+                        st.markdown("### 💚 Pagamento via Link Ton / Stone")
+                        st.info(cfg_pag_pos.get("ton_instrucoes") or "Clique no botão abaixo para pagar com Cartão ou Pix no Link Ton/Stone.")
+                        lnk_ton_f = det.get("link_ton") or cfg_pag_pos.get("ton_link_padrao") or ""
+                        if lnk_ton_f:
+                            st.link_button(f"💚 Abrir Link de Pagamento Ton / Stone (R$ {det['total']:.2f})", lnk_ton_f, type="primary", use_container_width=True)
+                        st.link_button("📲 Avisar Pagamento no WhatsApp", url_whats_separar, use_container_width=True)
+                    else:
+                        # Forma de pagamento personalizada cadastrada na aba 2 de Pagamento Pix
+                        mp_custom_obj = next((m for m in (cfg_pag_pos.get("metodos_personalizados") or []) if m.get("id") == met_escolhido), None)
+                        if mp_custom_obj:
+                            st.markdown(f"### {mp_custom_obj.get('nome', 'Forma de Pagamento')}")
+                            if mp_custom_obj.get("instrucoes"):
+                                st.info(mp_custom_obj["instrucoes"])
+                            lnk_c_ext = (mp_custom_obj.get("link") or "").strip()
+                            if lnk_c_ext.startswith("http"):
+                                st.link_button(
+                                    f"🔗 Abrir Link de Pagamento — {mp_custom_obj.get('nome')} (R$ {det['total']:.2f})",
+                                    lnk_c_ext,
+                                    type="primary",
+                                    use_container_width=True,
+                                )
+                            elif lnk_c_ext:
+                                st.markdown("**Chave / Dados para Pagamento:**")
+                                st.code(lnk_c_ext, language="text")
+                            st.link_button("📲 Confirmar / Enviar Comprovante no WhatsApp", url_whats_separar, type="primary", use_container_width=True)
 
             with st.container(border=True):
                 st.markdown("### 💙 Pagamento Oficial Mercado Pago — Pix Imediato na Tela ou Cartão até 12x / Boleto")
@@ -10110,7 +11669,8 @@ with c_pol4:
     )
 
 # Botão Flutuante do WhatsApp (posicionado acima da barra inferior do Streamlit Cloud / iOS Safe Area)
-st.markdown(
-    f'<a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1!%20Vim%20pelo%20site%20da%20Tags%20Inform%C3%A1tica" target="_blank" class="whatsapp-float-btn" title="Atendimento WhatsApp">💬</a>',
-    unsafe_allow_html=True,
-)
+if cfg_loja.get("exibir_whats_flutuante", True):
+    st.markdown(
+        f'<a href="https://wa.me/55{whats_num_clean}?text=Ol%C3%A1!%20Vim%20pelo%20site%20da%20Tags%20Inform%C3%A1tica" target="_blank" class="whatsapp-float-btn" title="Atendimento WhatsApp ({whats_loja_exibicao})">💬</a>',
+        unsafe_allow_html=True,
+    )
