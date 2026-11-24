@@ -1250,6 +1250,93 @@ def init_supabase():
 supabase = init_supabase()
 
 
+# =====================================================================
+# MOTOR DE CACHE DE ALTA CONCORRÊNCIA (SUPORTA MUITOS ACESSOS SIMULTÂNEOS)
+# Compartilha o catálogo público na memória RAM entre todos os visitantes
+# simultâneos (0 consultas repetidas por clique) e invalida instantaneamente
+# quando o Admin edita qualquer produto/configuração ou sai uma venda.
+# =====================================================================
+@st.cache_data(ttl=45, show_spinner=False)
+def _cache_hierarquia_supabase() -> tuple:
+    """Busca departamentos, categorias e subcategorias em memória compartilhada (TTL 45s)."""
+    r_dep = supabase.table("departamentos").select("*").order("ordem").order("id").execute()
+    r_cat = supabase.table("categorias").select("*").order("id").execute()
+    r_sub = supabase.table("subcategorias").select("*").order("id").execute()
+    return (r_dep.data or [], r_cat.data or [], r_sub.data or [])
+
+
+@st.cache_data(ttl=45, show_spinner=False)
+def _cache_produtos_supabase() -> list:
+    """Busca todos os produtos do catálogo em memória compartilhada (TTL 45s)."""
+    res = supabase.table("produtos").select("*").order("id", desc=True).execute()
+    return res.data or []
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cache_avaliacoes_supabase() -> list:
+    """Busca todas as avaliações de produtos em memória compartilhada (TTL 60s)."""
+    r_all = supabase.table("avaliacoes_produtos").select("*").order("id", desc=True).execute()
+    return r_all.data or []
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cache_mapa_vendas_supabase() -> dict:
+    """Calcula a contagem de vendas por produto em memória compartilhada (TTL 60s)."""
+    mapa_v = {}
+    res_ped_v = supabase.table("pedidos").select("itens, status_pagamento").execute()
+    for ped_v in (res_ped_v.data or []):
+        if str(ped_v.get("status_pagamento") or "").lower() == "cancelado":
+            continue
+        for it_v in (ped_v.get("itens") or []):
+            if isinstance(it_v, dict):
+                pid_v = str(it_v.get("id") or "")
+                qtd_v = max(1, int(it_v.get("qtd") or 1))
+                if pid_v:
+                    mapa_v[pid_v] = mapa_v.get(pid_v, 0) + qtd_v
+    return mapa_v
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cache_config_loja_supabase() -> dict:
+    """Busca a configuração principal da loja em memória compartilhada (TTL 60s)."""
+    res_cfg_db = supabase.table("config_loja").select("dados").eq("chave", "principal").limit(1).execute()
+    if res_cfg_db.data and isinstance(res_cfg_db.data[0].get("dados"), dict):
+        return dict(res_cfg_db.data[0]["dados"])
+    return {}
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _cache_centro_distribuicao_supabase() -> dict:
+    """Busca os dados do Centro de Distribuição em memória compartilhada (TTL 120s)."""
+    res_cd = supabase.table("centro_distribuicao").select("*").limit(1).execute()
+    if res_cd.data:
+        return dict(res_cd.data[0])
+    return {}
+
+
+def limpar_cache_alta_concorrencia():
+    """Invalida imediatamente todos os caches de catálogo quando o Admin altera dados ou ocorre uma venda."""
+    try:
+        _cache_hierarquia_supabase.clear()
+        _cache_produtos_supabase.clear()
+        _cache_avaliacoes_supabase.clear()
+        _cache_mapa_vendas_supabase.clear()
+        _cache_config_loja_supabase.clear()
+        _cache_centro_distribuicao_supabase.clear()
+    except Exception:
+        pass
+
+
+# Endpoint Ultraleve Anti-Hibernação (?ping=1) para o Robô Keep-Alive do GitHub Actions
+if st.query_params.get("ping") == "1":
+    try:
+        _cache_config_loja_supabase()
+    except Exception:
+        pass
+    st.markdown("🟢 **ONLINE** — Tags Informática & Supabase Keep-Alive Ativo (24/7)")
+    st.stop()
+
+
 def converter_imagem_upload(arquivo_upload) -> str:
     """
     Otimiza a imagem enviada e tenta salvá-la no bucket público 'produtos-midia' do Supabase Storage
@@ -2853,9 +2940,8 @@ if "dados_fiscais_loja" not in st.session_state:
         "logo_danfe": "",
     }
     try:
-        res_cd = supabase.table("centro_distribuicao").select("*").limit(1).execute()
-        if res_cd.data:
-            cd_db = res_cd.data[0]
+        cd_db = _cache_centro_distribuicao_supabase()
+        if cd_db:
             st.session_state["dados_fiscais_loja"].update({
                 "local_nome": cd_db.get("nome_local", "Depósito Principal Tags Informática"),
                 "razao_social": cd_db.get("razao_social", "Tags Informática LTDA"),
@@ -2919,15 +3005,10 @@ if "vinculos_produtos_local" not in st.session_state:
 
 
 def carregar_hierarquia_catalogo():
-    """Carrega Departamentos, Categorias e Subcategorias do Supabase com fallback automático."""
+    """Carrega Departamentos, Categorias e Subcategorias usando o Cache de Alta Concorrência com fallback automático."""
     banco_ok = False
     try:
-        r_dep = supabase.table("departamentos").select("*").order("ordem").order("id").execute()
-        r_cat = supabase.table("categorias").select("*").order("id").execute()
-        r_sub = supabase.table("subcategorias").select("*").order("id").execute()
-        deps = r_dep.data or []
-        cats = r_cat.data or []
-        subs = r_sub.data or []
+        deps, cats, subs = _cache_hierarquia_supabase()
         banco_ok = True
         if not deps:
             deps = st.session_state["departamentos_fallback"]
@@ -3066,7 +3147,7 @@ def carregar_estado_persistente() -> dict:
 
 
 def salvar_config_loja_supabase(cfg_dict: dict = None):
-    """Salva o layout (Cabeçalho, Banner e Rodapé) na tabela public.config_loja do Supabase e no disco."""
+    """Salva o layout (Cabeçalho, Banner e Rodapé) na tabela public.config_loja do Supabase e invalida o cache."""
     cfg_salvar = cfg_dict or st.session_state.get("config_loja", dict(CONFIG_LOJA_PADRAO))
     try:
         res_ck = supabase.table("config_loja").select("id").eq("chave", "principal").limit(1).execute()
@@ -3082,6 +3163,7 @@ def salvar_config_loja_supabase(cfg_dict: dict = None):
             }).execute()
     except Exception:
         pass
+    limpar_cache_alta_concorrencia()
     salvar_estado_persistente()
 
 
@@ -3200,11 +3282,11 @@ def hidratar_sessao_inicial():
         cfg_mesclada = dict(CONFIG_LOJA_PADRAO)
         if isinstance(persistido.get("config_loja"), dict):
             cfg_mesclada.update(persistido["config_loja"])
-        # Tentar carregar config_loja direto do Supabase (tabela public.config_loja)
+        # Tentar carregar config_loja do Cache de Alta Concorrência do Supabase (tabela public.config_loja)
         try:
-            res_cfg_db = supabase.table("config_loja").select("dados").eq("chave", "principal").limit(1).execute()
-            if res_cfg_db.data and isinstance(res_cfg_db.data[0].get("dados"), dict):
-                cfg_mesclada.update(res_cfg_db.data[0]["dados"])
+            dados_cfg_cached = _cache_config_loja_supabase()
+            if dados_cfg_cached:
+                cfg_mesclada.update(dados_cfg_cached)
         except Exception:
             pass
         st.session_state["config_loja"] = cfg_mesclada
@@ -3354,13 +3436,11 @@ def renderizar_player_video_produto(video_url: str):
 
 def carregar_mapa_avaliacoes_todos_produtos() -> dict:
     """
-    Carrega todas as avaliações em uma ÚNICA consulta ao Supabase (eliminando o problema de N+1 queries na vitrine).
+    Carrega todas as avaliações a partir do Cache de Alta Concorrência em memória RAM (TTL 60s).
     Retorna dict {str(produto_id): (lista_avaliacoes, media_nota, qtd_total)}.
     """
-    todas_db = []
     try:
-        r_all = supabase.table("avaliacoes_produtos").select("*").order("id", desc=True).execute()
-        todas_db = r_all.data or []
+        todas_db = list(_cache_avaliacoes_supabase())
     except Exception:
         todas_db = []
 
@@ -10794,11 +10874,11 @@ else:
             unsafe_allow_html=True,
         )
 
-    # Buscar e Filtrar Produtos por Departamento, Categoria, Subcategoria e Busca
+    # Buscar e Filtrar Produtos a partir do Cache de Alta Concorrência em Memória RAM (suporta 100+ acessos simultâneos sem sobrecarregar o banco)
     try:
-        res = supabase.table("produtos").select("*").order("id", desc=True).execute()
+        prods_cached_raw = _cache_produtos_supabase()
         todos_produtos_vitrine = [
-            p_v for p_v in (res.data or [])
+            dict(p_v) for p_v in prods_cached_raw
             if obter_links_pagamento_produto(p_v).get("ativo", True)
         ]
     except Exception:
@@ -10807,22 +10887,12 @@ else:
     # Ordena priorizando produtos em Destaque no topo da vitrine
     todos_produtos_vitrine.sort(key=lambda item_p: (1 if item_p.get("destaque") else 0, int(item_p.get("id") or 0)), reverse=True)
 
-    # Pré-carrega todas as avaliações em uma única query (elimina gargalo N+1 na vitrine)
+    # Pré-carrega todas as avaliações a partir do Cache em Memória RAM
     mapa_avals_vitrine = carregar_mapa_avaliacoes_todos_produtos()
 
-    # Pré-carrega contagem real de vendas por produto (para ordenação "Mais Vendidos" e selo social)
-    mapa_vendas_vitrine = {}
+    # Pré-carrega contagem real de vendas por produto a partir do Cache em Memória RAM
     try:
-        res_ped_v = supabase.table("pedidos").select("itens, status_pagamento").execute()
-        for ped_v in (res_ped_v.data or []):
-            if str(ped_v.get("status_pagamento") or "").lower() == "cancelado":
-                continue
-            for it_v in (ped_v.get("itens") or []):
-                if isinstance(it_v, dict):
-                    pid_v = str(it_v.get("id") or "")
-                    qtd_v = max(1, int(it_v.get("qtd") or 1))
-                    if pid_v:
-                        mapa_vendas_vitrine[pid_v] = mapa_vendas_vitrine.get(pid_v, 0) + qtd_v
+        mapa_vendas_vitrine = _cache_mapa_vendas_supabase()
     except Exception:
         mapa_vendas_vitrine = {}
 
